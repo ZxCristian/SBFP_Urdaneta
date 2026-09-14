@@ -125,7 +125,7 @@ export async function buildSbfpWorkbook(
   }
   if (logoRight) {
     const id = workbook.addImage({ base64: logoRight, extension: "png" });
-    ws.addImage(id, { tl: { col: 18, row: 0 }, ext: { width: 80, height: 80 } });
+    ws.addImage(id, { tl: { col: 18, row: 1 }, ext: { width: 80, height: 80 } });
   }
 
   // Title block
