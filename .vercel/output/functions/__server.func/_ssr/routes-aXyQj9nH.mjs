@@ -1,8 +1,22 @@
-import { i as __toESM } from "../_runtime.mjs";
+import { o as __toESM } from "../_runtime.mjs";
 import { L as require_react, v as require_jsx_runtime } from "../_libs/@tanstack/react-router+[...].mjs";
-//#region node_modules/.nitro/vite/services/ssr/assets/routes-B0_Mbfj4.js
+//#region node_modules/.nitro/vite/services/ssr/assets/routes-aXyQj9nH.js
 var import_react = /* @__PURE__ */ __toESM(require_react());
 var import_jsx_runtime = require_jsx_runtime();
+var EMPTY_FORM_DETAILS = {
+	division: "Urdaneta City",
+	cityMunicipalityBarangay: "",
+	schoolIdNumber: "",
+	principal: "",
+	focalPerson: ""
+};
+var FORM_DETAIL_FIELDS = [
+	["division", "Division"],
+	["cityMunicipalityBarangay", "City/Municipality/Barangay"],
+	["schoolIdNumber", "School ID Number"],
+	["principal", "Name of Principal"],
+	["focalPerson", "Name of Feeding Focal Person"]
+];
 var DARK = {
 	bg: "#080808",
 	surface: "#111111",
@@ -92,7 +106,8 @@ var INIT_ES = [
 ].map((name, i) => ({
 	id: `es${String(i + 1).padStart(2, "0")}`,
 	name,
-	type: "Elementary"
+	type: "Elementary",
+	...EMPTY_FORM_DETAILS
 }));
 var INIT_HS = [
 	"Anonas National High School",
@@ -111,7 +126,8 @@ var INIT_HS = [
 ].map((name, i) => ({
 	id: `hs${String(i + 1).padStart(2, "0")}`,
 	name,
-	type: "High School"
+	type: "High School",
+	...EMPTY_FORM_DETAILS
 }));
 var ES_GRADES = [
 	"Kinder",
@@ -282,320 +298,6 @@ function formatDateMDY(iso) {
 	const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
 	if (!m) return iso;
 	return `${m[2]}/${m[3]}/${m[1]}`;
-}
-function strToUint8(s) {
-	return new TextEncoder().encode(s);
-}
-/** CRC32 for ZIP */
-var CRC_TABLE = (() => {
-	const t = /* @__PURE__ */ new Uint32Array(256);
-	for (let n = 0; n < 256; n++) {
-		let c = n;
-		for (let k = 0; k < 8; k++) c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
-		t[n] = c;
-	}
-	return t;
-})();
-function crc32(data) {
-	let c = 4294967295;
-	for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 255] ^ c >>> 8;
-	return (c ^ 4294967295) >>> 0;
-}
-/** Build an uncompressed ZIP from name→bytes map */
-function buildZip(files) {
-	const parts = [];
-	const central = [];
-	let offset = 0;
-	const u16 = (n) => {
-		const b = /* @__PURE__ */ new Uint8Array(2);
-		new DataView(b.buffer).setUint16(0, n, true);
-		return b;
-	};
-	const u32 = (n) => {
-		const b = /* @__PURE__ */ new Uint8Array(4);
-		new DataView(b.buffer).setUint32(0, n, true);
-		return b;
-	};
-	const concat = (arrs) => {
-		const len = arrs.reduce((a, b) => a + b.length, 0);
-		const out = new Uint8Array(len);
-		let o = 0;
-		for (const a of arrs) {
-			out.set(a, o);
-			o += a.length;
-		}
-		return out;
-	};
-	for (const [name, data] of Object.entries(files)) {
-		const nameBytes = strToUint8(name);
-		const crc = crc32(data);
-		const local = concat([
-			u32(67324752),
-			u16(20),
-			u16(0),
-			u16(0),
-			u16(0),
-			u16(0),
-			u32(crc),
-			u32(data.length),
-			u32(data.length),
-			u16(nameBytes.length),
-			u16(0),
-			nameBytes,
-			data
-		]);
-		parts.push(local);
-		const cen = concat([
-			u32(33639248),
-			u16(20),
-			u16(20),
-			u16(0),
-			u16(0),
-			u16(0),
-			u16(0),
-			u32(crc),
-			u32(data.length),
-			u32(data.length),
-			u16(nameBytes.length),
-			u16(0),
-			u16(0),
-			u16(0),
-			u16(0),
-			u32(0),
-			u32(offset),
-			nameBytes
-		]);
-		central.push(cen);
-		offset += local.length;
-	}
-	const centralDir = concat(central);
-	const end = concat([
-		u32(101010256),
-		u16(0),
-		u16(0),
-		u16(Object.keys(files).length),
-		u16(Object.keys(files).length),
-		u32(centralDir.length),
-		u32(offset),
-		u16(0)
-	]);
-	return new Blob([concat([
-		...parts,
-		centralDir,
-		end
-	])], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-}
-function xmlEsc(s) {
-	return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-/**
-* Export SBFP Form 1A as .xlsx (no embedded images — add logos manually in Excel if needed)
-* Page: 8.5" × 13" (Folio) landscape, L/R margin 0, T/B 0.5", center horizontal
-*/
-function exportStudentsToExcel(school, rows, periodLabel) {
-	const titlePeriod = periodLabel === "All" ? "ALL PERIODS" : periodLabel.toUpperCase();
-	const sorted = sortRecords(rows);
-	const colsXml = [
-		4,
-		22,
-		6,
-		14,
-		14,
-		14,
-		12,
-		10,
-		10,
-		12,
-		14,
-		12,
-		16,
-		12,
-		14,
-		12,
-		14,
-		12,
-		16
-	].map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join("");
-	const merges = [
-		"A12:A13",
-		"B12:B13",
-		"C12:C13",
-		"D12:D13",
-		"E12:E13",
-		"F12:F13",
-		"G12:G13",
-		"H12:H13",
-		"I12:I13",
-		"J12:J13",
-		"K12:L12",
-		"M12:M13",
-		"N12:N13",
-		"O12:O13",
-		"P12:P13",
-		"Q12:Q13",
-		"R12:R13",
-		"S12:S13",
-		"A3:S3",
-		"A5:S5"
-	];
-	const mergeXml = merges.map((m) => `<mergeCell ref="${m}"/>`).join("");
-	const cell = (ref, value, style = 0) => {
-		if (value === "" || value === void 0 || value === null) return `<c r="${ref}" s="${style}"/>`;
-		if (typeof value === "number" && !Number.isNaN(value)) return `<c r="${ref}" s="${style}" t="n"><v>${value}</v></c>`;
-		return `<c r="${ref}" s="${style}" t="inlineStr"><is><t>${xmlEsc(String(value))}</t></is></c>`;
-	};
-	const headersR12 = [
-		["A12", "No."],
-		["B12", "Name"],
-		["C12", "Sex"],
-		["D12", "Grade / Section"],
-		["E12", "Date of Birth (MM/DD/YYYY)"],
-		["F12", "Date of Weighing (MM/DD/YYYY)"],
-		["G12", "Age in Years / Months"],
-		["H12", "Weight (Kg)"],
-		["I12", "Height (cm)"],
-		["J12", "BMI for 6 y.o. and above"],
-		["K12", "Nutritional Status (NS)"],
-		["M12", "Classification of Beneficiary (Primary or Secondary)"],
-		["N12", "Pregnant (Yes or No)"],
-		["O12", "With 0-1 year old children (Yes or No)"],
-		["P12", "Dewormed (Yes or No)"],
-		["Q12", "Parent's consent for milk (Yes or No)"],
-		["R12", "Participation in 4Ps (Yes or No)"],
-		["S12", "Beneficiary of SBFP in previous years (Yes or No)"]
-	];
-	const headersR13 = [["K13", "BMI-A"], ["L13", "HFA"]];
-	let sheetRows = "";
-	sheetRows += `<row r="1" ht="18" customHeight="1">${cell("A1", "SBFP Form 1A (2026)", 1)}</row>`;
-	sheetRows += `<row r="2" ht="8" customHeight="1"/>`;
-	sheetRows += `<row r="3" ht="28" customHeight="1">${cell("A3", "Department of Education", 2)}</row>`;
-	sheetRows += `<row r="4" ht="8" customHeight="1"/>`;
-	sheetRows += `<row r="5" ht="20" customHeight="1">${cell("A5", `Master List of Beneficiaries for School-Based Feeding Program (SBFP) | SY 2025-2026 — ${titlePeriod}`, 2)}</row>`;
-	sheetRows += `<row r="6" ht="8" customHeight="1"/>`;
-	sheetRows += `<row r="7">${cell("A7", "Division: Urdaneta City", 3)}${cell("G7", "Name of Principal: _______________________________", 3)}</row>`;
-	sheetRows += `<row r="8">${cell("A8", "City/Municipality/Barangay: _______________________", 3)}${cell("G8", "Name of Feeding Focal Person: ____________________", 3)}</row>`;
-	sheetRows += `<row r="9">${cell("A9", `Name of School / School District : ${school.name}`, 3)}</row>`;
-	sheetRows += `<row r="10">${cell("A10", `School Type: ${school.type}`, 3)}</row>`;
-	sheetRows += `<row r="11">${cell("A11", "School ID Number: _______________", 3)}</row>`;
-	sheetRows += `<row r="12" ht="30" customHeight="1">${headersR12.map(([r, v]) => cell(r, v, 4)).join("")}</row>`;
-	sheetRows += `<row r="13" ht="22" customHeight="1">${headersR13.map(([r, v]) => cell(r, v, 4)).join("")}</row>`;
-	sorted.forEach((s, i) => {
-		const r = 14 + i;
-		const age = s.ageYears || s.ageMonths ? `${s.ageYears || "0"}/${s.ageMonths || "0"}` : "";
-		const vals = [
-			i + 1,
-			s.name || "",
-			s.sex || "",
-			s.gradeLevel || "",
-			formatDateMDY(s.dateOfBirth),
-			formatDateMDY(s.dateOfWeighing),
-			age,
-			s.weight ? parseFloat(s.weight) : "",
-			s.height ? parseFloat(s.height) : "",
-			s.bmi ? parseFloat(s.bmi) : "",
-			s.bmiStatus || s.nutritionalStatus || "",
-			s.hfaStatus || "",
-			s.classificationOfBeneficiary || "",
-			s.pregnant || "",
-			s.hasYoungChildren || "",
-			s.dewormed || "",
-			s.parentConsentMilk || "",
-			s.fourPs || "",
-			s.sbfpPreviousYears || ""
-		];
-		const letters = "ABCDEFGHIJKLMNOPQRS";
-		sheetRows += `<row r="${r}">${vals.map((v, ci) => cell(`${letters[ci]}${r}`, v, 5)).join("")}</row>`;
-	});
-	const lastData = 13 + sorted.length;
-	const signRow = lastData + 2;
-	sheetRows += `<row r="${lastData + 1}"/>`;
-	sheetRows += `<row r="${signRow}">${cell(`B${signRow}`, "Approve by:", 3)}</row>`;
-	sheetRows += `<row r="${signRow + 1}"/>`;
-	sheetRows += `<row r="${signRow + 2}">${cell(`B${signRow + 2}`, "________________________", 1)}</row>`;
-	sheetRows += `<row r="${signRow + 3}">${cell(`B${signRow + 3}`, "School Head", 1)}</row>`;
-	const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
- xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
- xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
-  <sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>
-  <dimension ref="A1:S${signRow + 3}"/>
-  <sheetViews><sheetView workbookViewId="0"/></sheetViews>
-  <sheetFormatPr defaultRowHeight="15"/>
-  <cols>${colsXml}</cols>
-  <sheetData>${sheetRows}</sheetData>
-  <mergeCells count="${merges.length}">${mergeXml}</mergeCells>
-  <pageMargins left="0" right="0" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>
-  <pageSetup paperSize="14" orientation="landscape" horizontalCentered="1" fitToWidth="1" fitToHeight="0"/>
-</worksheet>`;
-	const blob = buildZip({
-		"[Content_Types].xml": strToUint8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
-</Types>`),
-		"_rels/.rels": strToUint8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>`),
-		"xl/workbook.xml": strToUint8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
- xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets><sheet name="SBFP Master List" sheetId="1" r:id="rId1"/></sheets>
-</workbook>`),
-		"xl/_rels/workbook.xml.rels": strToUint8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>`),
-		"xl/worksheets/sheet1.xml": strToUint8(sheetXml),
-		"xl/styles.xml": strToUint8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="5">
-    <font><sz val="10"/><name val="Calibri"/></font>
-    <font><b/><sz val="11"/><name val="Calibri"/></font>
-    <font><b/><sz val="14"/><name val="Calibri"/></font>
-    <font><sz val="10"/><name val="Calibri"/></font>
-    <font><b/><sz val="8"/><name val="Calibri"/></font>
-  </fonts>
-  <fills count="3">
-    <fill><patternFill patternType="none"/></fill>
-    <fill><patternFill patternType="gray125"/></fill>
-    <fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/></patternFill></fill>
-  </fills>
-  <borders count="2">
-    <border><left/><right/><top/><bottom/><diagonal/></border>
-    <border>
-      <left style="thin"><color auto="1"/></left>
-      <right style="thin"><color auto="1"/></right>
-      <top style="thin"><color auto="1"/></top>
-      <bottom style="thin"><color auto="1"/></bottom>
-      <diagonal/>
-    </border>
-  </borders>
-  <cellStyleXfs count="1"><xf/></cellStyleXfs>
-  <cellXfs count="6">
-    <xf fontId="0" fillId="0" borderId="0"/>
-    <xf fontId="1" fillId="0" borderId="0"/>
-    <xf fontId="2" fillId="0" borderId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
-    <xf fontId="3" fillId="0" borderId="0"/>
-    <xf fontId="4" fillId="2" borderId="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
-    <xf fontId="0" fillId="0" borderId="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>
-  </cellXfs>
-</styleSheet>`)
-	});
-	const url = URL.createObjectURL(blob);
-	const a = document.createElement("a");
-	const safeName = school.name.replace(/[^\w\s-]/g, "").replace(/\s+/g, "_");
-	const safePeriod = periodLabel.replace(/\s+/g, "_");
-	a.href = url;
-	a.download = `SBFP_Form_1A_${safeName}_${safePeriod}_SY2025-2026.xlsx`;
-	document.body.appendChild(a);
-	a.click();
-	document.body.removeChild(a);
-	URL.revokeObjectURL(url);
 }
 var WHO_BMI_M = [
 	[15.3, 1],
@@ -1471,6 +1173,8 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }) {
 	const [typeFilter, setTypeFilter] = (0, import_react.useState)("All");
 	const [editingId, setEditingId] = (0, import_react.useState)(null);
 	const [editingName, setEditingName] = (0, import_react.useState)("");
+	/** Form 1A header fields of the school being edited (Excel export header block) */
+	const [editingDetails, setEditingDetails] = (0, import_react.useState)(EMPTY_FORM_DETAILS);
 	const [showAdd, setShowAdd] = (0, import_react.useState)(false);
 	const [newName, setNewName] = (0, import_react.useState)("");
 	const [newType, setNewType] = (0, import_react.useState)("Elementary");
@@ -1484,11 +1188,19 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }) {
 	const startEdit = (s) => {
 		setEditingId(s.id);
 		setEditingName(s.name);
+		setEditingDetails({
+			division: s.division,
+			cityMunicipalityBarangay: s.cityMunicipalityBarangay,
+			schoolIdNumber: s.schoolIdNumber,
+			principal: s.principal,
+			focalPerson: s.focalPerson
+		});
 	};
 	const saveEdit = () => {
 		if (editingName.trim()) setSchools(schools.map((s) => s.id === editingId ? {
 			...s,
-			name: editingName.trim()
+			name: editingName.trim(),
+			...editingDetails
 		} : s));
 		setEditingId(null);
 	};
@@ -1502,7 +1214,8 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }) {
 		setSchools([...schools, {
 			id,
 			name: newName.trim(),
-			type: newType
+			type: newType,
+			...EMPTY_FORM_DETAILS
 		}]);
 		setNewName("");
 		setShowAdd(false);
@@ -1706,7 +1419,7 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }) {
 						const cov = coverage(school.id);
 						const n = count(school.id);
 						const isEditing = editingId === school.id;
-						return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("tr", {
+						return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_react.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("tr", {
 							className: "group transition-colors",
 							style: { borderBottom: `1px solid ${t.border}` },
 							onMouseEnter: (e) => e.currentTarget.style.background = t.hover,
@@ -1714,18 +1427,8 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }) {
 							children: [
 								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", {
 									className: "px-4 py-2.5 font-medium",
-									children: isEditing ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-										value: editingName,
-										onChange: (e) => setEditingName(e.target.value),
-										onKeyDown: (e) => {
-											if (e.key === "Enter") saveEdit();
-											if (e.key === "Escape") setEditingId(null);
-										},
-										autoFocus: true,
-										className: "text-sm px-2 py-1 rounded-sm outline-none w-full",
-										style: { ...inp }
-									}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										style: { color: t.text },
+									children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										style: { color: isEditing ? t.accent : t.text },
 										children: school.name
 									})
 								}),
@@ -1797,7 +1500,90 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }) {
 									})
 								})
 							]
-						}, school.id);
+						}), isEditing && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("tr", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", {
+							colSpan: 8,
+							className: "px-4 py-4",
+							style: { background: t.surfaceDeep },
+							children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex flex-col gap-3",
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex items-center gap-2",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "text-[9px] tracking-widest uppercase",
+											style: { color: t.dim },
+											children: "Edit School — SBFP Form 1A Details"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "text-[9px]",
+											style: { color: t.faint },
+											children: "(printed in the Excel export header)"
+										})]
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "grid grid-cols-1 md:grid-cols-2 gap-3",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+											className: "block text-[9px] tracking-widest uppercase mb-1.5",
+											style: { color: t.dim },
+											children: "School Name"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+											value: editingName,
+											onChange: (e) => setEditingName(e.target.value),
+											onKeyDown: (e) => {
+												if (e.key === "Enter") saveEdit();
+												if (e.key === "Escape") setEditingId(null);
+											},
+											autoFocus: true,
+											className: "text-sm px-3 py-2 rounded-sm outline-none w-full",
+											style: { ...inp }
+										})] }), FORM_DETAIL_FIELDS.map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+											className: "block text-[9px] tracking-widest uppercase mb-1.5",
+											style: { color: t.dim },
+											children: label
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+											value: editingDetails[key],
+											onChange: (e) => setEditingDetails((d) => ({
+												...d,
+												[key]: e.target.value
+											})),
+											onKeyDown: (e) => {
+												if (e.key === "Enter") saveEdit();
+												if (e.key === "Escape") setEditingId(null);
+											},
+											className: "text-sm px-3 py-2 rounded-sm outline-none w-full",
+											style: { ...inp }
+										})] }, key))]
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex items-center gap-3",
+										children: [
+											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+												onClick: saveEdit,
+												className: "px-4 py-2 text-xs font-semibold rounded-sm cursor-pointer",
+												style: {
+													background: t.accent,
+													color: t.accentText
+												},
+												children: "Save Details"
+											}),
+											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+												onClick: () => setEditingId(null),
+												className: "px-3 py-2 text-xs cursor-pointer rounded-sm border",
+												style: {
+													borderColor: t.border,
+													color: t.dim
+												},
+												children: "Cancel"
+											}),
+											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+												className: "text-[10px]",
+												style: { color: t.faint },
+												children: "Tip: press Enter to save · Esc to cancel"
+											})
+										]
+									})
+								]
+							})
+						}) })] }, school.id);
 					}) })]
 				})
 			})
@@ -2516,6 +2302,7 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
 function StudentRecords({ students, setStudents, school, setView, onEdit }) {
 	const t = useT();
 	const [period, setPeriod] = (0, import_react.useState)("All");
+	const [exporting, setExporting] = (0, import_react.useState)(false);
 	const [search, setSearch] = (0, import_react.useState)("");
 	const uniqueStudentCount = (0, import_react.useMemo)(() => uniqueCount(students), [students]);
 	const filtered = (0, import_react.useMemo)(() => {
@@ -2566,7 +2353,15 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }) {
 				})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "flex gap-2",
 					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-						onClick: () => exportStudentsToExcel(school, filtered, period === "All" ? "All" : period),
+						onClick: async () => {
+							setExporting(true);
+							try {
+								const { exportStudentsToExcel } = await import("./sbfp-export-CnzfK6jc.mjs");
+								await exportStudentsToExcel(school, filtered, period === "All" ? "All" : period);
+							} finally {
+								setExporting(false);
+							}
+						},
 						disabled: filtered.length === 0,
 						className: "px-4 py-2 text-sm font-semibold rounded-sm cursor-pointer border transition-colors",
 						style: {
@@ -2575,7 +2370,7 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }) {
 							borderColor: filtered.length === 0 ? t.border : t.accent + "60",
 							cursor: filtered.length === 0 ? "not-allowed" : "pointer"
 						},
-						children: "↓ Export Excel"
+						children: exporting ? "Exporting…" : "↓ Export Excel"
 					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 						onClick: () => setView("entry"),
 						className: "px-4 py-2 text-sm font-semibold rounded-sm cursor-pointer",
