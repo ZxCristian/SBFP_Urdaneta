@@ -1,4 +1,6 @@
 import { useState, useMemo, createContext, useContext, useEffect, useRef, Fragment, type CSSProperties } from "react";
+// Type-only: erased at build time, so ExcelJS stays out of the initial bundle.
+import type { SummaryMatrixRow } from "@/lib/sbfp-export";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type GradeLevel =
@@ -11,21 +13,26 @@ type SchoolType = "Elementary"|"High School";
 type BMIStatus = "Severely Wasted"|"Wasted"|"Normal"|"Overweight"|"Obese"|"";
 type HFAStatus = "Severely Stunted"|"Stunted"|"Normal"|"Tall"|"";
 type YesNo = "Yes"|"No"|"";
-type View = "district"|"schools"|"dashboard"|"records"|"entry"|"table"|"analytics";
+type View = "district"|"feedback"|"schools"|"dashboard"|"records"|"entry"|"table"|"analytics";
 
 interface School {
   id: string; name: string; type: SchoolType;
-  /** SBFP Form 1A header block (printed rows 7–11 of the export) */
+  /** SBFP form header block (Form 1A export, and Form 2's field block) */
   division: string;
   cityMunicipalityBarangay: string;
   schoolIdNumber: string;
   principal: string;
   focalPerson: string;
+  /** Form 2 only: ISO date the feeding starts. */
+  dateStartFeeding: string;
+  /** Form 2 only: Last Mile School, printed as ___Y ___N. */
+  lastMileSchool: YesNo;
 }
-/** The five editable Form 1A header fields, minus identity. */
-type SchoolFormDetails = Pick<School, "division"|"cityMunicipalityBarangay"|"schoolIdNumber"|"principal"|"focalPerson">;
+/** The editable form header fields, minus identity. */
+type SchoolFormDetails = Pick<School, "division"|"cityMunicipalityBarangay"|"schoolIdNumber"|"principal"|"focalPerson"|"dateStartFeeding"|"lastMileSchool">;
 const EMPTY_FORM_DETAILS: SchoolFormDetails = {
   division: "Urdaneta City", cityMunicipalityBarangay: "", schoolIdNumber: "", principal: "", focalPerson: "",
+  dateStartFeeding: "", lastMileSchool: "",
 };
 const FORM_DETAIL_FIELDS: [keyof SchoolFormDetails, string][] = [
   ["division", "Division"],
@@ -33,6 +40,8 @@ const FORM_DETAIL_FIELDS: [keyof SchoolFormDetails, string][] = [
   ["schoolIdNumber", "School ID Number"],
   ["principal", "Name of Principal"],
   ["focalPerson", "Name of Feeding Focal Person"],
+  ["dateStartFeeding", "Date of Start of Feeding"],
+  ["lastMileSchool", "Last Mile School"],
 ];
 interface Student {
   id: string; schoolId: string; period: Period; sy: string;
@@ -46,24 +55,70 @@ interface Student {
   parentConsentMilk: YesNo; fourPs: YesNo; sbfpPreviousYears: YesNo;
 }
 
+// ── School feedback — what the schools send up, aggregated district-wide ───────
+type FeedbackCategory =
+  |"Feeding Implementation"|"Nutrition Data"|"Supplies & Logistics"
+  |"Learner Concerns"|"System / Forms"|"Other";
+type FeedbackStatus = "New"|"Acknowledged"|"Resolved";
+interface SchoolFeedback {
+  id: string;
+  /** The school that sent it — the Feedbacks page shows every school together. */
+  schoolId: string;
+  author: string;
+  /** e.g. "SBFP Focal", "School Head", "Grade 6 Adviser" */
+  role: string;
+  category: FeedbackCategory;
+  /** 1–5: how the feeding program is running at that school. */
+  rating: number;
+  message: string;
+  /** ISO date the school sent it. */
+  createdAt: string;
+  status: FeedbackStatus;
+  /** The district's answer back to the school, once written. */
+  response?: string;
+}
+const FEEDBACK_CATEGORIES: FeedbackCategory[] = [
+  "Feeding Implementation","Nutrition Data","Supplies & Logistics",
+  "Learner Concerns","System / Forms","Other",
+];
+const FEEDBACK_STATUSES: FeedbackStatus[] = ["New","Acknowledged","Resolved"];
+
 // ── Theme ──────────────────────────────────────────────────────────────────────
 interface TC {
   bg: string; surface: string; surface2: string; surfaceDeep: string;
   hover: string; border: string; text: string; sub: string; dim: string; faint: string;
   accent: string; accentBg: string; accentText: string;
   danger: string; warning: string; grandBg: string; isDark: boolean;
+  /**
+   * Data colours (measurement periods, BMI/HFA statuses, BMI/HFA/4P's/SBFP
+   * columns and school pills). Dark mode keeps the phosphor neon set; day mode
+   * uses deeper tones of the same hue so numbers and labels stay readable
+   * against a white surface instead of washing out.
+   */
+  blue: string; lime: string; orange: string;
+  period: Record<string,string>;
+  bmi: Record<string,string>;
+  hfa: Record<string,string>;
 }
 const DARK: TC = {
   bg:"#080808", surface:"#111111", surface2:"#161616", surfaceDeep:"#0d0d0d",
   hover:"#161616", border:"#1e1e1e", text:"#e2e2e2", sub:"#888", dim:"#555", faint:"#2a2a2a",
   accent:"#00ff87", accentBg:"#00ff8720", accentText:"#000", danger:"#ff4b4b", warning:"#ff9f4b",
   grandBg:"#0a1a10", isDark:true,
+  blue:"#00c9ff", lime:"#b8ff4f", orange:"#ff9f4b",
+  period:{ Baseline:"#00c9ff", Midline:"#ff9f4b", Endline:"#00ff87" },
+  bmi:{ "Severely Wasted":"#ff4b4b", Wasted:"#ff9f4b", Normal:"#00ff87", Overweight:"#ffdd4b", Obese:"#ff6b9d" },
+  hfa:{ "Severely Stunted":"#ff4b4b", Stunted:"#ff9f4b", Normal:"#00ff87", Tall:"#00c9ff" },
 };
 const LIGHT: TC = {
-  bg:"#f2f2ee", surface:"#ffffff", surface2:"#f0f0ec", surfaceDeep:"#e8e8e4",
-  hover:"#ebebea", border:"#ddddd8", text:"#1a1a1a", sub:"#666", dim:"#999", faint:"#bbb",
-  accent:"#00a855", accentBg:"#00a85515", accentText:"#fff", danger:"#cc3333", warning:"#cc6600",
-  grandBg:"#e8f5ee", isDark:false,
+  bg:"#f1f1ed", surface:"#ffffff", surface2:"#f7f7f3", surfaceDeep:"#e6e6e0",
+  hover:"#eaeae6", border:"#d3d3ca", text:"#1b1b17", sub:"#4d4d46", dim:"#6d6d64", faint:"#8e8e85",
+  accent:"#0b7a41", accentBg:"#0b7a4118", accentText:"#ffffff", danger:"#bc2f2f", warning:"#9d5200",
+  grandBg:"#e4f1e8", isDark:false,
+  blue:"#0f6f91", lime:"#557a12", orange:"#a25a09",
+  period:{ Baseline:"#0f6f91", Midline:"#a25a09", Endline:"#0e7a41" },
+  bmi:{ "Severely Wasted":"#c22b2b", Wasted:"#a25a09", Normal:"#0e7a41", Overweight:"#8a6a00", Obese:"#b3316a" },
+  hfa:{ "Severely Stunted":"#c22b2b", Stunted:"#a25a09", Normal:"#0e7a41", Tall:"#0f6f91" },
 };
 const ThemeCtx = createContext<TC>(DARK);
 const useT = () => useContext(ThemeCtx);
@@ -141,11 +196,10 @@ const ES_GRADES_WITH_SPED: GradeLevel[] = [
 ];
 const HS_GRADES: GradeLevel[] = ["Grade 7","Grade 8","Grade 9","Grade 10","Grade 11","Grade 12"];
 const PERIODS: Period[] = ["Baseline","Midline","Endline"];
-const PC: Record<Period,string> = { Baseline:"#00c9ff", Midline:"#ff9f4b", Endline:"#00ff87" };
 const BMI_STATUSES: BMIStatus[] = ["Severely Wasted","Wasted","Normal","Overweight","Obese"];
 const HFA_STATUSES: HFAStatus[] = ["Severely Stunted","Stunted","Normal","Tall"];
-const BMI_C: Record<string,string> = { "Severely Wasted":"#ff4b4b","Wasted":"#ff9f4b","Normal":"#00ff87","Overweight":"#ffdd4b","Obese":"#ff6b9d" };
-const HFA_C: Record<string,string> = { "Severely Stunted":"#ff4b4b","Stunted":"#ff9f4b","Normal":"#00ff87","Tall":"#00c9ff" };
+// Period / BMI / HFA data colours now come from the theme (t.period, t.bmi, t.hfa)
+// so day mode can use readable tones instead of the neon dark-mode set.
 
 const getSchool = (schools: School[], id: string) => schools.find(s => s.id === id);
 const SPED_SCHOOL_NAME = "Urdaneta 1 Central School";
@@ -431,6 +485,109 @@ function generateSeed(schools: School[]): Student[] {
 
 const SEED: Student[] = generateSeed([...INIT_ES, ...INIT_HS]);
 
+// ── Feedbacks sent up by the schools ──────────────────────────────────────────
+// Seeded with one voice per school so the district page opens with a real
+// cross-section of the field instead of an empty list.
+const schoolIdOf = (name: string) =>
+  INIT_ES.find(s => s.name === name)?.id ?? INIT_HS.find(s => s.name === name)?.id ?? "";
+
+type FeedbackSeed = Omit<SchoolFeedback, "id"|"schoolId"> & { school: string };
+
+const FEEDBACK_ROWS: FeedbackSeed[] = [
+  { school:"Urdaneta 1 Central School", author:"Josefa Ramos", role:"SBFP Focal", category:"Feeding Implementation", rating:5, createdAt:"2026-07-08", status:"Resolved",
+    message:"Feeding started on July 6 as scheduled. 118 of our 124 target learners were present on Day 1; the six absentees were followed up by their advisers the same week.",
+    response:"Noted and appreciated. Please keep the daily attendance sheet for the midyear validation." },
+  { school:"Badipa Elementary School", author:"Aileen Marie Dela Cruz", role:"Feeding Coordinator", category:"Supplies & Logistics", rating:3, createdAt:"2026-07-17", status:"Resolved",
+    message:"We received 30 kilos of rice but only 24 litres of milk for the first cycle. Grades 1 and 2 are short for the last two weeks of the cycle.",
+    response:"Validated with the division supply unit; the balance of 12 litres goes out with the next batch." },
+  { school:"Catablan Integrated School", author:"Rolando Bautista", role:"School Head", category:"Supplies & Logistics", rating:2, createdAt:"2026-07-23", status:"Resolved",
+    message:"The weighing scale assigned to Grade 3 gives inconsistent readings — three learners weighed twice differed by as much as 1.5 kilos. Requesting a replacement or calibration.",
+    response:"Two replacement scales from division stock were released on July 28. Please re-weigh the affected learners and update the baseline." },
+  { school:"Anonas Elementary School", author:"Marilou Aquino", role:"School Nurse", category:"Nutrition Data", rating:4, createdAt:"2026-08-04", status:"Acknowledged",
+    message:"Baseline BMI and HFA for Kinder to Grade 6 are complete and encoded. Grade 6 Endline is still pending — we weigh after the final feeding day on October 20.",
+    response:"Received. Kindly submit the Endline records within three days of the final weighing day." },
+  { school:"Palina East Elementary School", author:"Elmer Soriano", role:"SBFP Focal", category:"Learner Concerns", rating:5, createdAt:"2026-08-12", status:"Resolved",
+    message:"Six learners flagged Wasted at baseline moved to Normal at the midline. Their parents are asking whether the milk component can continue until the end of the school year." },
+  { school:"Cayambanan Elementary School", author:"Girlie Punzalan", role:"Grade 6 Adviser", category:"System / Forms", rating:4, createdAt:"2026-08-20", status:"Acknowledged",
+    message:"The Form 2 export now comes out the same as the printed template, thank you. Requesting the same auto-total for the last column of Form 1A if possible." },
+  { school:"Don A. Maiquez Memorial Elementary School", author:"Norberto Villamor", role:"School Head", category:"Feeding Implementation", rating:4, createdAt:"2026-08-27", status:"Resolved",
+    message:"We feed 96 learners in two shifts because the canteen only seats 50 at a time. Sessions run at 7:00 and 9:30 AM so no class time is lost." },
+  { school:"Urdaneta City National High School", author:"Rosalie Andrada", role:"Feeding Coordinator", category:"Nutrition Data", rating:3, createdAt:"2026-09-02", status:"Acknowledged",
+    message:"Twelve Grade 7 learners have no height on record for the baseline — their Form 1A entries were submitted with the height column blank.",
+    response:"Please re-measure and re-upload. That is why the Form 2 HEIGHT columns read zero for Grade 7." },
+  { school:"Sta. Lucia Elementary School", author:"Teodoro Espino", role:"SBFP Focal", category:"Learner Concerns", rating:3, createdAt:"2026-09-08", status:"Acknowledged",
+    message:"Two learners with Severe Wasting were referred to the Rural Health Unit for check-up. We are holding them on the regular menu until the results come back.",
+    response:"Log the referral with the school nurse; a modified menu can be requested through the SDO if the RHU advises it." },
+  { school:"Camantiles National High School", author:"Bernadette Lagasca", role:"School Nurse", category:"Feeding Implementation", rating:5, createdAt:"2026-09-11", status:"Resolved",
+    message:"All 84 target learners finished the deworming on schedule and the feeding line runs in 15 minutes with parent volunteers helping." },
+  { school:"Tulong Integrated School", author:"Armando Ferrer", role:"School Head", category:"Supplies & Logistics", rating:4, createdAt:"2026-09-15", status:"New",
+    message:"Requesting additional milk for three transferee learners who were added after the master list was finalized last August." },
+  { school:"San Jose Elementary School", author:"Jennifer Manaois", role:"SBFP Focal", category:"Feeding Implementation", rating:5, createdAt:"2026-09-18", status:"Acknowledged",
+    message:"Midline feeding completed. Attendance in the feeding area is at 98% over the last four weeks." },
+  { school:"Manan Elementary School", author:"Crisanto Bacani", role:"Grade 3 Adviser", category:"Other", rating:4, createdAt:"2026-09-22", status:"New",
+    message:"Our washing station has no roof. Requesting help with a tarpaulin or a small repair before the rainy months." },
+  { school:"Nancayasan Elementary School", author:"Lorna Dizon", role:"SBFP Focal", category:"Nutrition Data", rating:3, createdAt:"2026-09-24", status:"Acknowledged",
+    message:"We re-weighed the 14 learners whose baseline came out Overweight: ten are now Normal, four are still Overweight and will be monitored monthly." },
+  { school:"DAPSMECS Main", author:"Fidel Agustin", role:"School Head", category:"System / Forms", rating:3, createdAt:"2026-09-29", status:"New",
+    message:"We cannot find where to record learners who transfer in the middle of the feeding cycle. They appear in the master list but not in Form 2." },
+  { school:"Vicente Taaca Memorial School", author:"Michelle Bautista", role:"Feeding Coordinator", category:"Feeding Implementation", rating:4, createdAt:"2026-10-02", status:"Acknowledged",
+    message:"Kinder and Grade 1 are fed before recess so the learners eat inside the feeding area. Endline weighing is scheduled for October 19–20." },
+  { school:"Cabaruan Elementary School", author:"Rodelio Marquez", role:"SBFP Focal", category:"Supplies & Logistics", rating:2, createdAt:"2026-10-06", status:"New",
+    message:"Our plates and spoons are only enough for one section at a time, so we borrow from the EPP kitchen. Requesting a set for the second feeding area." },
+  { school:"Anonas National High School", author:"Percival Bautista", role:"School Head", category:"Learner Concerns", rating:4, createdAt:"2026-10-07", status:"New",
+    message:"Two Grade 9 learners flagged Wasted at baseline improved to Normal at the midline. Their parents are requesting a continuation form for next school year." },
+];
+
+const FEEDBACK_SEED: SchoolFeedback[] = FEEDBACK_ROWS
+  .map(({ school, ...f }, i) => ({ ...f, id:`fb${String(i+1).padStart(2,"0")}`, schoolId: schoolIdOf(school) }))
+  .filter(f => f.schoolId);
+
+// ── Feedback helpers ──────────────────────────────────────────────────────────
+const MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+/** ISO date → "Oct 02, 2026" */
+function shortDate(iso: string): string {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return iso;
+  return `${MONTH_ABBR[Number(m[2]) - 1] ?? m[2]} ${m[3]}, ${m[1]}`;
+}
+
+/** ISO date → "today" / "6 days ago"; anything older stays an absolute date. */
+function ageLabel(iso: string): string {
+  const days = Math.floor((Date.now() - Date.parse(`${iso}T00:00:00`)) / 86400000);
+  if (!Number.isFinite(days) || days < 0) return shortDate(iso);
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  return shortDate(iso);
+}
+
+/** One hue per kind of feedback (6-digit hex — Pill appends alpha to it). */
+function categoryColor(c: FeedbackCategory, t: TC): string {
+  switch (c) {
+    case "Feeding Implementation": return t.accent;
+    case "Nutrition Data": return t.blue;
+    case "Supplies & Logistics": return t.orange;
+    case "Learner Concerns": return t.lime;
+    case "System / Forms": return t.isDark ? "#c9a4ff" : "#6b3fa0";
+    default: return t.isDark ? "#9a9a9a" : "#57574f";
+  }
+}
+
+/** Status pill colour — amber while new, blue once acknowledged, green when closed. */
+function statusColor(s: FeedbackStatus, t: TC): string {
+  return s === "New" ? t.orange : s === "Acknowledged" ? t.blue : t.accent;
+}
+
+function Stars({ rating, color, size = 11 }: { rating: number; color: string; size?: number }) {
+  const full = Math.max(0, Math.min(5, Math.round(rating)));
+  return (
+    <span title={`${rating} of 5`} style={{ fontFamily:"'JetBrains Mono',monospace", color, fontSize:`${size}px`, letterSpacing:"1px" }}>
+      {"★".repeat(full)}{"☆".repeat(5 - full)}
+    </span>
+  );
+}
+
 // ── Shared UI Primitives ───────────────────────────────────────────────────────
 function Pill({ label, color }: { label: string; color: string }) {
   return <span className="text-[9px] px-1.5 py-0.5 rounded-sm" style={{ background:color+"20", color, border:`1px solid ${color}40` }}>{label}</span>;
@@ -458,7 +615,7 @@ function YesNoToggle({ value, onChange, t }: { value:YesNo; onChange:(v:YesNo)=>
     <div className="flex gap-1">
       {(["Yes","No"] as YesNo[]).map(v => (
         <button key={v} onClick={() => onChange(v)} className="flex-1 py-2 text-xs rounded-sm cursor-pointer border transition-colors"
-          style={value===v ? { background:v==="Yes"?t.accentBg:"#cc333315", color:v==="Yes"?t.accent:t.danger, borderColor:v==="Yes"?t.accent+"40":t.danger+"40" } : { background:t.surface2, color:t.dim, borderColor:t.border }}>
+          style={value===v ? { background:v==="Yes"?t.accentBg:t.danger+"15", color:v==="Yes"?t.accent:t.danger, borderColor:v==="Yes"?t.accent+"40":t.danger+"40" } : { background:t.surface2, color:t.dim, borderColor:t.border }}>
           {v}
         </button>
       ))}
@@ -483,6 +640,7 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
   const t = useT();
   const nav: { id:View; label:string; icon:string; requiresSchool?:boolean }[] = [
     { id:"district", label:"District Dashboard", icon:"◎" },
+    { id:"feedback", label:"Feedbacks", icon:"✉" },
     { id:"schools", label:"All Schools", icon:"◉" },
     { id:"dashboard", label:"Dashboard", icon:"▦", requiresSchool:true },
     { id:"records", label:"Student Records", icon:"☰", requiresSchool:true },
@@ -492,14 +650,14 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
   ];
   return (
     <aside style={{ borderRight:`1px solid ${t.border}`, background:t.surface }} className="w-56 flex-shrink-0 flex flex-col h-full">
-      <div className="px-5 py-5" style={{ borderBottom:`1px solid ${t.border}` }}>
-        <div className="flex items-center gap-2.5 mb-0.5">
-          <div className="w-6 h-6 rounded-sm flex items-center justify-center" style={{ background:t.accent }}>
-            <span className="text-[9px] font-bold" style={{ color:t.accentText }}>DEP</span>
+      <div className="px-5 py-4" style={{ borderBottom:`1px solid ${t.border}` }}>
+        <div className="flex items-center gap-3">
+          <img src="/school-health-wheel.svg" alt="Coordinated School Health" width={44} height={44} className="w-11 h-11 flex-shrink-0" />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold leading-tight" style={{ color:t.text }}>Health Monitor</div>
+            <div className="text-[10px] leading-tight mt-1" style={{ color:t.dim }}>Urdaneta City Schools</div>
           </div>
-          <span className="text-sm font-semibold" style={{ color:t.text }}>Health Monitor</span>
         </div>
-        <div className="text-[10px] pl-8" style={{ color:t.dim }}>District Data System</div>
       </div>
 
       {selectedSchool && (
@@ -507,7 +665,7 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
           <div className="text-[8px] tracking-widest uppercase mb-1" style={{ color:t.dim }}>Selected School</div>
           <div className="text-[11px] leading-snug font-medium" style={{ color:t.text }}>{selectedSchool.name}</div>
           <div className="flex items-center gap-1.5 mt-1.5">
-            <Pill label={selectedSchool.type==="Elementary"?"ES":"HS"} color={selectedSchool.type==="Elementary"?"#00c9ff":"#b8ff4f"} />
+            <Pill label={selectedSchool.type==="Elementary"?"ES":"HS"} color={selectedSchool.type==="Elementary"?t.blue:t.lime} />
             <button onClick={() => { setSelectedSchool(null); setView("schools"); }} className="text-[9px] cursor-pointer ml-auto transition-colors" style={{ color:t.dim }}
               onMouseEnter={e=>(e.currentTarget.style.color=t.sub)} onMouseLeave={e=>(e.currentTarget.style.color=t.dim)}>✕ clear</button>
           </div>
@@ -545,7 +703,9 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
 }
 
 // ── District Dashboard ────────────────────────────────────────────────────────
-function DistrictDashboard({ students, schools }: { students:Student[]; schools:School[] }) {
+function DistrictDashboard({ students, schools, feedbacks, onOpenFeedbacks }: {
+  students:Student[]; schools:School[]; feedbacks:SchoolFeedback[]; onOpenFeedbacks:()=>void;
+}) {
   const t = useT();
   const [tab, setTab] = useState<"All"|"Elementary"|"High School">("All");
 
@@ -556,8 +716,8 @@ function DistrictDashboard({ students, schools }: { students:Student[]; schools:
   // One row per student (prefer Endline) so totals are not tripled by period records
   const uniqueFiltered = useMemo(() => uniqueStudents(filtered), [filtered]);
 
-  const bmiDist = BMI_STATUSES.map(st => ({ label:st, val:uniqueFiltered.filter(s=>s.bmiStatus===st).length, color:BMI_C[st] }));
-  const hfaDist = HFA_STATUSES.map(st => ({ label:st, val:uniqueFiltered.filter(s=>s.hfaStatus===st).length, color:HFA_C[st] }));
+  const bmiDist = BMI_STATUSES.map(st => ({ label:st, val:uniqueFiltered.filter(s=>s.bmiStatus===st).length, color:t.bmi[st] }));
+  const hfaDist = HFA_STATUSES.map(st => ({ label:st, val:uniqueFiltered.filter(s=>s.hfaStatus===st).length, color:t.hfa[st] }));
   const maxBMI = Math.max(...bmiDist.map(x=>x.val), 1);
   const maxHFA = Math.max(...hfaDist.map(x=>x.val), 1);
 
@@ -578,6 +738,13 @@ function DistrictDashboard({ students, schools }: { students:Student[]; schools:
   const hsCount = uniqueCount(students.filter(s=>hsIds.has(s.schoolId)));
   const esSchoolsWithData = schools.filter(s=>s.type==="Elementary"&&students.some(st=>st.schoolId===s.id)).length;
   const hsSchoolsWithData = schools.filter(s=>s.type==="High School"&&students.some(st=>st.schoolId===s.id)).length;
+
+  // Feedbacks from every school, newest first — the Feedbacks page shows the rest.
+  const latestFeedback = useMemo(
+    () => [...feedbacks].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0, 4),
+    [feedbacks]
+  );
+  const openFeedback = feedbacks.filter(f=>f.status!=="Resolved").length;
 
   return (
     <div className="flex flex-col gap-6">
@@ -633,9 +800,9 @@ function DistrictDashboard({ students, schools }: { students:Student[]; schools:
           <div className="flex items-end gap-3 h-28">
             {periodCounts.map(d => (
               <div key={d.period} className="flex-1 flex flex-col items-center gap-2">
-                <span className="text-sm font-semibold" style={{ fontFamily:"'JetBrains Mono',monospace", color:PC[d.period] }}>{d.count}</span>
-                <div className="w-full rounded-sm" style={{ height:`${(d.count/maxPeriod)*70}px`, minHeight:"2px", background:PC[d.period]+"70" }} />
-                <span className="text-[9px]" style={{ color:PC[d.period] }}>{d.period}</span>
+                <span className="text-sm font-semibold" style={{ fontFamily:"'JetBrains Mono',monospace", color:t.period[d.period] }}>{d.count}</span>
+                <div className="w-full rounded-sm" style={{ height:`${(d.count/maxPeriod)*70}px`, minHeight:"2px", background:t.period[d.period]+"70" }} />
+                <span className="text-[9px]" style={{ color:t.period[d.period] }}>{d.period}</span>
               </div>
             ))}
           </div>
@@ -649,7 +816,7 @@ function DistrictDashboard({ students, schools }: { students:Student[]; schools:
             {topSchools.map(x => (
               <div key={x.school.id} className="flex items-center justify-between py-2.5" style={{ borderBottom:`1px solid ${t.border}` }}>
                 <div className="flex items-center gap-2">
-                  <Pill label={x.school.type==="Elementary"?"ES":"HS"} color={x.school.type==="Elementary"?"#00c9ff":"#b8ff4f"} />
+                  <Pill label={x.school.type==="Elementary"?"ES":"HS"} color={x.school.type==="Elementary"?t.blue:t.lime} />
                   <span className="text-sm" style={{ color:t.text }}>{x.school.name}</span>
                 </div>
                 <div className="flex items-center gap-4">
@@ -661,6 +828,317 @@ function DistrictDashboard({ students, schools }: { students:Student[]; schools:
           </div>
         </div>
       )}
+
+      {/* Feedbacks — every school's submissions, newest first */}
+      <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-5">
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>Feedbacks — from all schools</span>
+            {openFeedback > 0 && <Pill label={`${openFeedback} open`} color={t.orange} />}
+          </div>
+          <button onClick={onOpenFeedbacks} className="text-[11px] px-3 py-1.5 rounded-sm cursor-pointer border transition-colors"
+            style={{ background:t.accentBg, color:t.accent, borderColor:t.accent+"40" }}>
+            View all {feedbacks.length} feedbacks →
+          </button>
+        </div>
+        {latestFeedback.length === 0 ? (
+          <p className="text-xs" style={{ color:t.dim }}>No school has sent feedback yet.</p>
+        ) : (
+          <div className="flex flex-col gap-0">
+            {latestFeedback.map(f => {
+              const school = schools.find(s=>s.id===f.schoolId);
+              return (
+                <div key={f.id} className="flex items-start justify-between gap-4 py-3" style={{ borderBottom:`1px solid ${t.border}` }}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-medium" style={{ color:t.text }}>{school?.name ?? "Unknown school"}</span>
+                      <Pill label={f.category} color={categoryColor(f.category, t)} />
+                    </div>
+                    <p className="text-[11px] mt-1 leading-relaxed line-clamp-2" style={{ color:t.sub }}>{f.message}</p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                    <Pill label={f.status} color={statusColor(f.status, t)} />
+                    <span className="text-[9px]" style={{ color:t.faint }}>{ageLabel(f.createdAt)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Feedbacks — one district feed fed by every school ─────────────────────────
+function Feedbacks({ feedbacks, setFeedbacks, schools, defaultSchool }: {
+  feedbacks:SchoolFeedback[]; setFeedbacks:(f:SchoolFeedback[])=>void;
+  schools:School[]; defaultSchool:School|null;
+}) {
+  const t = useT();
+  const [tab, setTab] = useState<"All"|SchoolType>("All");
+  const [status, setStatus] = useState<FeedbackStatus|"All">("All");
+  const [category, setCategory] = useState<FeedbackCategory|"All">("All");
+  const [q, setQ] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [openReply, setOpenReply] = useState<string|null>(null);
+  const [replyText, setReplyText] = useState("");
+  // Record-feedback form
+  const [fSchool, setFSchool] = useState(defaultSchool?.id ?? "");
+  const [fAuthor, setFAuthor] = useState("");
+  const [fRole, setFRole] = useState("SBFP Focal");
+  const [fCategory, setFCategory] = useState<FeedbackCategory>("Feeding Implementation");
+  const [fRating, setFRating] = useState(5);
+  const [fMessage, setFMessage] = useState("");
+
+  const byId = useMemo(() => new Map(schools.map(s => [s.id, s])), [schools]);
+
+  const filtered = useMemo(() => feedbacks
+    .filter(f => {
+      const school = byId.get(f.schoolId);
+      if (tab !== "All" && school?.type !== tab) return false;
+      if (status !== "All" && f.status !== status) return false;
+      if (category !== "All" && f.category !== category) return false;
+      const needle = q.trim().toLowerCase();
+      if (needle) {
+        const hay = `${f.message} ${f.author} ${f.role} ${f.response ?? ""} ${school?.name ?? ""}`.toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)),
+  [feedbacks, byId, tab, status, category, q]);
+
+  const newCount = feedbacks.filter(f => f.status === "New").length;
+  const openCount = feedbacks.filter(f => f.status !== "Resolved").length;
+  const schoolsReporting = new Set(feedbacks.map(f => f.schoolId)).size;
+  const rated = feedbacks.filter(f => f.rating > 0);
+  const avgRating = rated.length ? rated.reduce((s, f) => s + f.rating, 0) / rated.length : 0;
+
+  const setStatusOf = (id: string, next: FeedbackStatus) =>
+    setFeedbacks(feedbacks.map(f => f.id === id ? { ...f, status: next } : f));
+
+  const saveResponse = (id: string) => {
+    const text = replyText.trim();
+    if (!text) return;
+    setFeedbacks(feedbacks.map(f => f.id === id
+      ? { ...f, response: text, status: f.status === "New" ? "Acknowledged" : f.status }
+      : f));
+    setReplyText("");
+    setOpenReply(null);
+  };
+
+  const submit = () => {
+    if (!fSchool || !fMessage.trim()) return;
+    const entry: SchoolFeedback = {
+      id: `fb-${Date.now()}`,
+      schoolId: fSchool,
+      author: fAuthor.trim() || "Unspecified",
+      role: fRole.trim() || "School staff",
+      category: fCategory,
+      rating: fRating,
+      message: fMessage.trim(),
+      createdAt: new Date().toISOString().slice(0, 10),
+      status: "New",
+    };
+    setFeedbacks([entry, ...feedbacks]);
+    // Clear the filters too, so what was just recorded is on screen.
+    setTab("All"); setStatus("All"); setCategory("All"); setQ("");
+    setFMessage(""); setFAuthor(""); setFRating(5); setShowForm(false);
+  };
+
+  const inp = { background:t.surface2, color:t.text, border:`1px solid ${t.border}` } as CSSProperties;
+  const chip = (active: boolean) => active
+    ? { background:t.accentBg, color:t.accent, borderColor:t.accent+"40" }
+    : { background:t.surface, color:t.dim, borderColor:t.border };
+  const canSubmit = !!fSchool && !!fMessage.trim();
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-lg font-semibold" style={{ color:t.text }}>Feedbacks</h1>
+          <p className="text-xs mt-0.5" style={{ color:t.dim }}>
+            Every school's feedback in one district feed · {schoolsReporting} of {schools.length} schools have sent in
+          </p>
+        </div>
+        <button onClick={() => setShowForm(v => !v)} className="px-3 py-1.5 text-xs rounded-sm cursor-pointer font-semibold border transition-colors"
+          style={showForm ? { background:t.surface2, color:t.sub, borderColor:t.border } : { background:t.accent, color:t.accentText, borderColor:t.accent }}>
+          {showForm ? "Cancel" : "＋ Record Feedback"}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-px" style={{ background:t.border }}>
+        <StatCard label="Total Feedback" value={feedbacks.length} accent t={t} />
+        <StatCard label="New" value={newCount} t={t} />
+        <StatCard label="Still Open" value={openCount} t={t} />
+        <StatCard label="Resolved" value={feedbacks.length - openCount} t={t} />
+      </div>
+
+      <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-5">
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+          <div className="text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>Schools Reporting</div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px]" style={{ color:t.dim }}>Average rating</span>
+            <span className="text-sm font-semibold" style={{ fontFamily:"'JetBrains Mono',monospace", color:t.text }}>{avgRating ? avgRating.toFixed(1) : "—"}</span>
+            <Stars rating={avgRating} color={t.orange} size={12} />
+          </div>
+        </div>
+        <div className="flex items-baseline gap-2 mb-3">
+          <span className="text-xl font-semibold" style={{ fontFamily:"'JetBrains Mono',monospace", color:t.accent }}>{schoolsReporting}</span>
+          <span className="text-[11px]" style={{ color:t.dim }}>of {schools.length} schools</span>
+        </div>
+        <Bar val={schoolsReporting} max={Math.max(schools.length, 1)} color={t.accent} t={t} />
+      </div>
+
+      {showForm && (
+        <div style={{ border:`1px solid ${t.accent}40`, background:t.surface }} className="p-5 flex flex-col gap-4">
+          <div className="text-[9px] tracking-widest uppercase" style={{ color:t.accent }}>Record feedback from a school</div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <Field label="School" span="md:col-span-2" t={t}>
+              <select value={fSchool} onChange={e => setFSchool(e.target.value)} className="w-full text-sm px-3 py-2 rounded-sm outline-none" style={{ ...inp, cursor:"pointer" }}>
+                <option value="">— Select a school —</option>
+                {schools.filter(s => s.type === "Elementary").map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {schools.filter(s => s.type === "High School").map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Submitted by" t={t}>
+              <input value={fAuthor} onChange={e => setFAuthor(e.target.value)} placeholder="Name of sender"
+                className="w-full text-sm px-3 py-2 rounded-sm outline-none" style={{ ...inp, fontFamily:"'Outfit',sans-serif" }} />
+            </Field>
+            <Field label="Role" t={t}>
+              <input value={fRole} onChange={e => setFRole(e.target.value)} placeholder="SBFP Focal"
+                className="w-full text-sm px-3 py-2 rounded-sm outline-none" style={{ ...inp, fontFamily:"'Outfit',sans-serif" }} />
+            </Field>
+            <Field label="Category" t={t}>
+              <select value={fCategory} onChange={e => setFCategory(e.target.value as FeedbackCategory)} className="w-full text-sm px-3 py-2 rounded-sm outline-none" style={{ ...inp, cursor:"pointer" }}>
+                {FEEDBACK_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Rating — how is feeding going?" span="md:col-span-3" t={t}>
+              <div className="flex items-center gap-2">
+                {[1,2,3,4,5].map(n => (
+                  <button key={n} type="button" onClick={() => setFRating(n)} className="cursor-pointer leading-none"
+                    title={`${n} of 5`} style={{ color:n <= fRating ? t.orange : t.faint, fontSize:"20px" }}>★</button>
+                ))}
+                <span className="text-[10px] ml-1" style={{ color:t.dim }}>{fRating} of 5</span>
+              </div>
+            </Field>
+            <Field label="Feedback" span="md:col-span-4" t={t}>
+              <textarea rows={3} value={fMessage} onChange={e => setFMessage(e.target.value)} placeholder="What is the school reporting?"
+                className="w-full text-sm px-3 py-2 rounded-sm outline-none resize-y" style={{ ...inp, fontFamily:"'Outfit',sans-serif" }} />
+            </Field>
+          </div>
+          <div className="flex justify-end">
+            <button onClick={submit} disabled={!canSubmit} className="px-4 py-2 text-xs rounded-sm font-semibold border transition-colors"
+              style={{ background:canSubmit ? t.accent : t.surface2, color:canSubmit ? t.accentText : t.faint, borderColor:t.border, cursor:canSubmit ? "pointer" : "not-allowed" }}>
+              Submit feedback
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        {(["All","Elementary","High School"] as const).map(tb => (
+          <button key={tb} onClick={() => setTab(tb)} className="px-3 py-1.5 text-xs rounded-sm cursor-pointer border transition-colors" style={chip(tab===tb)}>
+            {tb === "All" ? "All Schools" : tb}
+          </button>
+        ))}
+        <span className="w-px h-5 mx-1" style={{ background:t.border }} />
+        {(["All", ...FEEDBACK_STATUSES] as const).map(s => {
+          const n = s === "All" ? feedbacks.length : feedbacks.filter(f => f.status === s).length;
+          return (
+            <button key={s} onClick={() => setStatus(s)} className="px-3 py-1.5 text-xs rounded-sm cursor-pointer border transition-colors" style={chip(status===s)}>
+              {s} <span style={{ color: status===s ? t.accent : t.faint }}>{n}</span>
+            </button>
+          );
+        })}
+        <select value={category} onChange={e => setCategory(e.target.value as FeedbackCategory|"All")}
+          className="text-xs px-2 py-1.5 rounded-sm outline-none cursor-pointer" style={inp}>
+          <option value="All">All categories</option>
+          {FEEDBACK_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search feedback…"
+          className="text-xs px-3 py-1.5 rounded-sm outline-none w-44 md:ml-auto" style={{ ...inp, fontFamily:"'Outfit',sans-serif" }} />
+      </div>
+
+      <div className="flex flex-col gap-3">
+        {filtered.length === 0 && (
+          <div style={{ border:`1px dashed ${t.border}`, background:t.surface }} className="p-8 text-center">
+            <p className="text-sm" style={{ color:t.sub }}>No feedback matches these filters.</p>
+            <p className="text-xs mt-1" style={{ color:t.dim }}>Try another status, category or school type.</p>
+          </div>
+        )}
+        {filtered.map(f => {
+          const school = byId.get(f.schoolId);
+          const isOpen = openReply === f.id;
+          const canSend = !!replyText.trim();
+          return (
+            <div key={f.id} style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-5">
+              <div className="flex items-start justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  {school && <Pill label={school.type === "Elementary" ? "ES" : "HS"} color={school.type === "Elementary" ? t.blue : t.lime} />}
+                  <span className="text-sm font-medium" style={{ color:t.text }}>{school?.name ?? "Unknown school"}</span>
+                  <Pill label={f.category} color={categoryColor(f.category, t)} />
+                </div>
+                <div className="flex items-center gap-3">
+                  <Stars rating={f.rating} color={t.orange} />
+                  <Pill label={f.status} color={statusColor(f.status, t)} />
+                </div>
+              </div>
+
+              <p className="text-sm mt-3 leading-relaxed" style={{ color:t.text }}>{f.message}</p>
+
+              <div className="flex items-center gap-2 mt-3 flex-wrap text-[10px]" style={{ color:t.dim }}>
+                <span>{f.author} · {f.role}</span>
+                <span style={{ color:t.faint }}>•</span>
+                <span style={{ color:t.faint }}>{shortDate(f.createdAt)} · {ageLabel(f.createdAt)}</span>
+              </div>
+
+              {f.response && (
+                <div className="mt-3 pl-3 py-2" style={{ borderLeft:`2px solid ${t.accent}`, background:t.accentBg }}>
+                  <div className="text-[9px] tracking-widest uppercase mb-1" style={{ color:t.accent }}>District response</div>
+                  <p className="text-xs leading-relaxed" style={{ color:t.sub }}>{f.response}</p>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2 mt-4 flex-wrap">
+                {f.status === "New" && (
+                  <button onClick={() => setStatusOf(f.id, "Acknowledged")} className="px-2.5 py-1 text-[10px] rounded-sm cursor-pointer border"
+                    style={{ color:t.blue, borderColor:t.blue+"40", background:t.blue+"15" }}>Acknowledge</button>
+                )}
+                {f.status !== "Resolved" ? (
+                  <button onClick={() => setStatusOf(f.id, "Resolved")} className="px-2.5 py-1 text-[10px] rounded-sm cursor-pointer border"
+                    style={{ color:t.accent, borderColor:t.accent+"40", background:t.accentBg }}>Mark resolved</button>
+                ) : (
+                  <button onClick={() => setStatusOf(f.id, "Acknowledged")} className="px-2.5 py-1 text-[10px] rounded-sm cursor-pointer border"
+                    style={{ color:t.dim, borderColor:t.border, background:t.surface2 }}>Reopen</button>
+                )}
+                <button onClick={() => { setOpenReply(isOpen ? null : f.id); setReplyText(f.response ?? ""); }}
+                  className="px-2.5 py-1 text-[10px] rounded-sm cursor-pointer border"
+                  style={{ color:t.dim, borderColor:t.border, background:t.surface2 }}>
+                  {f.response ? "Edit response" : "Respond"}
+                </button>
+              </div>
+
+              {isOpen && (
+                <div className="mt-3 flex flex-col gap-2">
+                  <textarea rows={2} value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write the district's answer back to this school…"
+                    className="w-full text-sm px-3 py-2 rounded-sm outline-none resize-y" style={{ ...inp, fontFamily:"'Outfit',sans-serif" }} />
+                  <div className="flex justify-end gap-2">
+                    <button onClick={() => { setOpenReply(null); setReplyText(""); }} className="px-3 py-1.5 text-[10px] rounded-sm cursor-pointer border"
+                      style={{ color:t.dim, borderColor:t.border, background:t.surface2 }}>Cancel</button>
+                    <button onClick={() => saveResponse(f.id)} disabled={!canSend} className="px-3 py-1.5 text-[10px] rounded-sm font-semibold border"
+                      style={{ background:canSend ? t.accent : t.surface2, color:canSend ? t.accentText : t.faint, borderColor:t.border, cursor:canSend ? "pointer" : "not-allowed" }}>
+                      Send response
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -691,7 +1169,11 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
   const startEdit = (s: School) => {
     setEditingId(s.id);
     setEditingName(s.name);
-    setEditingDetails({ division: s.division, cityMunicipalityBarangay: s.cityMunicipalityBarangay, schoolIdNumber: s.schoolIdNumber, principal: s.principal, focalPerson: s.focalPerson });
+    setEditingDetails({
+      division: s.division, cityMunicipalityBarangay: s.cityMunicipalityBarangay, schoolIdNumber: s.schoolIdNumber,
+      principal: s.principal, focalPerson: s.focalPerson,
+      dateStartFeeding: s.dateStartFeeding, lastMileSchool: s.lastMileSchool,
+    });
   };
   const saveEdit = () => {
     if (editingName.trim()) {
@@ -740,10 +1222,10 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
           const n = schools.filter(s=>students.some(st=>st.schoolId===s.id&&st.period===p)).length;
           return (
             <div key={p} style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-4">
-              <div className="text-[9px] tracking-widest uppercase mb-2" style={{ color:PC[p] }}>{p}</div>
+              <div className="text-[9px] tracking-widest uppercase mb-2" style={{ color:t.period[p] }}>{p}</div>
               <div className="text-xl font-semibold" style={{ fontFamily:"'JetBrains Mono',monospace", color:t.text }}>{n}<span className="text-sm" style={{ color:t.faint }}>/{schools.length}</span></div>
               <div className="text-[10px] mt-1" style={{ color:t.dim }}>schools with data</div>
-              <Bar val={n} max={schools.length} color={PC[p]} t={t} />
+              <Bar val={n} max={schools.length} color={t.period[p]} t={t} />
             </div>
           );
         })}
@@ -772,7 +1254,7 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
             <tr style={{ borderBottom:`1px solid ${t.border}` }}>
               <th className="text-left px-4 py-3 text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>School</th>
               <th className="px-4 py-3 text-[9px] tracking-widest uppercase text-center" style={{ color:t.dim }}>Type</th>
-              {PERIODS.map(p => <th key={p} className="px-4 py-3 text-[9px] tracking-widest uppercase text-center" style={{ color:PC[p]+"99" }}>{p}</th>)}
+              {PERIODS.map(p => <th key={p} className="px-4 py-3 text-[9px] tracking-widest uppercase text-center" style={{ color:t.period[p]+"99" }}>{p}</th>)}
               <th className="px-4 py-3 text-[9px] tracking-widest uppercase text-center" style={{ color:t.dim }}>Students</th>
               <th className="px-4 py-3 w-32" />
             </tr>
@@ -790,11 +1272,11 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
                     <span style={{ color: isEditing ? t.accent : t.text }}>{school.name}</span>
                   </td>
                   <td className="px-4 py-2.5 text-center">
-                    <Pill label={school.type==="Elementary"?"ES":"HS"} color={school.type==="Elementary"?"#00c9ff":"#b8ff4f"} />
+                    <Pill label={school.type==="Elementary"?"ES":"HS"} color={school.type==="Elementary"?t.blue:t.lime} />
                   </td>
                   {PERIODS.map(p => (
                     <td key={p} className="px-4 py-2.5 text-center">
-                      {cov.includes(p) ? <span style={{ color:PC[p] }}>✓</span> : <span style={{ color:t.faint }}>—</span>}
+                      {cov.includes(p) ? <span style={{ color:t.period[p] }}>✓</span> : <span style={{ color:t.faint }}>—</span>}
                     </td>
                   ))}
                   <td className="px-4 py-2.5 text-center text-xs" style={{ fontFamily:"'JetBrains Mono',monospace", color:n>0?t.sub:t.faint }}>{n}</td>
@@ -819,7 +1301,7 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
                     <td colSpan={8} className="px-4 py-4" style={{ background: t.surfaceDeep }}>
                       <div className="flex flex-col gap-3">
                         <div className="flex items-center gap-2">
-                          <span className="text-[9px] tracking-widest uppercase" style={{ color: t.dim }}>Edit School — SBFP Form 1A Details</span>
+                          <span className="text-[9px] tracking-widest uppercase" style={{ color: t.dim }}>Edit School — SBFP Form Details</span>
                           <span className="text-[9px]" style={{ color: t.faint }}>(printed in the Excel export header)</span>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -831,9 +1313,26 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
                           {FORM_DETAIL_FIELDS.map(([key, label]) => (
                             <div key={key}>
                               <label className="block text-[9px] tracking-widest uppercase mb-1.5" style={{ color: t.dim }}>{label}</label>
-                              <input value={editingDetails[key]} onChange={e=>setEditingDetails(d=>({ ...d, [key]: e.target.value }))}
-                                onKeyDown={e=>{ if(e.key==="Enter")saveEdit(); if(e.key==="Escape")setEditingId(null); }}
-                                className="text-sm px-3 py-2 rounded-sm outline-none w-full" style={{ ...inp }} />
+                              {key === "lastMileSchool" ? (
+                                <div className="flex gap-1.5">
+                                  {(["Yes","No"] as YesNo[]).map(v => (
+                                    <button key={v} type="button"
+                                      onClick={() => setEditingDetails(d => ({ ...d, lastMileSchool: d.lastMileSchool === v ? "" : v }))}
+                                      className="px-4 py-2 text-xs font-semibold rounded-sm cursor-pointer border transition-colors"
+                                      style={editingDetails.lastMileSchool === v
+                                        ? { background:t.accentBg, color:t.accent, borderColor:t.accent+"40" }
+                                        : { ...inp, color:t.dim }}>
+                                      {v}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : (
+                                <input value={editingDetails[key]} type={key === "dateStartFeeding" ? "date" : "text"}
+                                  onChange={e=>setEditingDetails(d=>({ ...d, [key]: e.target.value }))}
+                                  onKeyDown={e=>{ if(e.key==="Enter")saveEdit(); if(e.key==="Escape")setEditingId(null); }}
+                                  className="text-sm px-3 py-2 rounded-sm outline-none w-full"
+                                  style={{ ...inp, colorScheme: t.isDark ? "dark" : "light" }} />
+                              )}
                             </div>
                           ))}
                         </div>
@@ -863,8 +1362,8 @@ function Dashboard({ students, school }: { students:Student[]; school:School }) 
   const fRaw = period==="All" ? students : students.filter(s=>s.period===period);
   // Deduplicate so one student is counted once (prefer Endline when period=All)
   const f = period==="All" ? uniqueStudents(fRaw) : fRaw;
-  const bmiDist = BMI_STATUSES.map(st=>({ label:st, val:f.filter(s=>s.bmiStatus===st).length, color:BMI_C[st] }));
-  const hfaDist = HFA_STATUSES.map(st=>({ label:st, val:f.filter(s=>s.hfaStatus===st).length, color:HFA_C[st] }));
+  const bmiDist = BMI_STATUSES.map(st=>({ label:st, val:f.filter(s=>s.bmiStatus===st).length, color:t.bmi[st] }));
+  const hfaDist = HFA_STATUSES.map(st=>({ label:st, val:f.filter(s=>s.hfaStatus===st).length, color:t.hfa[st] }));
   const maxBMI = Math.max(...bmiDist.map(x=>x.val),1);
   const maxHFA = Math.max(...hfaDist.map(x=>x.val),1);
   const grades = getGrades(school);
@@ -882,7 +1381,7 @@ function Dashboard({ students, school }: { students:Student[]; school:School }) 
           {(["All",...PERIODS] as const).map(p => (
             <button key={p} onClick={() => setPeriod(p)} className="px-3 py-1.5 text-xs rounded-sm cursor-pointer border transition-colors"
               style={period===p
-                ? p==="All" ? { background:t.accentBg, color:t.accent, borderColor:t.accent+"40" } : { background:PC[p as Period]+"20", color:PC[p as Period], borderColor:PC[p as Period]+"40" }
+                ? p==="All" ? { background:t.accentBg, color:t.accent, borderColor:t.accent+"40" } : { background:t.period[p as Period]+"20", color:t.period[p as Period], borderColor:t.period[p as Period]+"40" }
                 : { background:t.surface, color:t.dim, borderColor:t.border }}>
               {p}
             </button>
@@ -1055,7 +1554,7 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
             style={periodError ? { outline: `2px solid ${t.danger}`, outlineOffset: 2, borderRadius: 4, padding: 2 } : undefined}>
             {PERIODS.map(p => (
               <button key={p} onClick={() => handlePeriodChange(p)} className="px-3 py-1.5 text-xs rounded-sm cursor-pointer border transition-colors"
-                style={period===p ? { background:PC[p]+"20", color:PC[p], borderColor:PC[p]+"40" } : { background:t.surface, color:t.dim, borderColor:t.border }}>
+                style={period===p ? { background:t.period[p]+"20", color:t.period[p], borderColor:t.period[p]+"40" } : { background:t.surface, color:t.dim, borderColor:t.border }}>
                 {p}
               </button>
             ))}
@@ -1131,20 +1630,20 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field t={t} label="BMI Status (WHO 2007 — auto, editable)">
             <div className="flex gap-2 items-center">
-              <select value={form.bmiStatus} onChange={e=>set("bmiStatus",e.target.value as BMIStatus)} style={{ ...inp, cursor:"pointer", flex:1, color: form.bmiStatus ? BMI_C[form.bmiStatus] : t.dim }} className={cls}>
+              <select value={form.bmiStatus} onChange={e=>set("bmiStatus",e.target.value as BMIStatus)} style={{ ...inp, cursor:"pointer", flex:1, color: form.bmiStatus ? t.bmi[form.bmiStatus] : t.dim }} className={cls}>
                 <option value="">— Select —</option>
-                {BMI_STATUSES.map(s=><option key={s} value={s} style={{ color:BMI_C[s] }}>{s}</option>)}
+                {BMI_STATUSES.map(s=><option key={s} value={s} style={{ color:t.bmi[s] }}>{s}</option>)}
               </select>
-              {form.bmiStatus && <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:BMI_C[form.bmiStatus] }} />}
+              {form.bmiStatus && <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:t.bmi[form.bmiStatus] }} />}
             </div>
           </Field>
           <Field t={t} label="HFA Status (WHO 2007 — auto, editable)">
             <div className="flex gap-2 items-center">
-              <select value={form.hfaStatus} onChange={e=>set("hfaStatus",e.target.value as HFAStatus)} style={{ ...inp, cursor:"pointer", flex:1, color: form.hfaStatus ? HFA_C[form.hfaStatus] : t.dim }} className={cls}>
+              <select value={form.hfaStatus} onChange={e=>set("hfaStatus",e.target.value as HFAStatus)} style={{ ...inp, cursor:"pointer", flex:1, color: form.hfaStatus ? t.hfa[form.hfaStatus] : t.dim }} className={cls}>
                 <option value="">— Select —</option>
-                {HFA_STATUSES.map(s=><option key={s} value={s} style={{ color:HFA_C[s] }}>{s}</option>)}
+                {HFA_STATUSES.map(s=><option key={s} value={s} style={{ color:t.hfa[s] }}>{s}</option>)}
               </select>
-              {form.hfaStatus && <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:HFA_C[form.hfaStatus] }} />}
+              {form.hfaStatus && <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background:t.hfa[form.hfaStatus] }} />}
             </div>
           </Field>
         </div>
@@ -1262,7 +1761,7 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }: {
         {(["All", ...PERIODS] as const).map(p => (
           <button key={p} onClick={() => setPeriod(p)} className="px-3 py-1.5 text-xs rounded-sm cursor-pointer border transition-colors"
             style={period === p
-              ? p === "All" ? { background: t.accentBg, color: t.accent, borderColor: t.accent + "40" } : { background: PC[p as Period] + "20", color: PC[p as Period], borderColor: PC[p as Period] + "40" }
+              ? p === "All" ? { background: t.accentBg, color: t.accent, borderColor: t.accent + "40" } : { background: t.period[p as Period] + "20", color: t.period[p as Period], borderColor: t.period[p as Period] + "40" }
               : { background: t.surface, color: t.dim, borderColor: t.border }}>
             {p}
           </button>
@@ -1320,10 +1819,10 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }: {
                   {td(s.height || "", { mono: true })}
                   {td(s.bmi || "", { mono: true, color: s.bmi ? t.accent : t.faint })}
                   <td className="px-1.5 py-2 text-center" style={{ borderRight: `1px solid ${t.surfaceDeep}` }}>
-                    {s.bmiStatus ? <Pill label={s.bmiStatus} color={BMI_C[s.bmiStatus]} /> : <span style={{ color: t.faint }}>—</span>}
+                    {s.bmiStatus ? <Pill label={s.bmiStatus} color={t.bmi[s.bmiStatus]} /> : <span style={{ color: t.faint }}>—</span>}
                   </td>
                   <td className="px-1.5 py-2 text-center" style={{ borderRight: `1px solid ${t.surfaceDeep}` }}>
-                    {s.hfaStatus ? <Pill label={s.hfaStatus} color={HFA_C[s.hfaStatus]} /> : <span style={{ color: t.faint }}>—</span>}
+                    {s.hfaStatus ? <Pill label={s.hfaStatus} color={t.hfa[s.hfaStatus]} /> : <span style={{ color: t.faint }}>—</span>}
                   </td>
                   {td(s.classificationOfBeneficiary || "")}
                   {td(s.pregnant || "")}
@@ -1334,7 +1833,7 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }: {
                   {td(s.sbfpPreviousYears || "")}
                   <td className="px-2 py-2" style={{ whiteSpace: "nowrap" }}>
                     <div className="flex items-center gap-2 justify-center">
-                      {s.period ? <Pill label={s.period} color={PC[s.period]} /> : null}
+                      {s.period ? <Pill label={s.period} color={t.period[s.period]} /> : null}
                       <button onClick={() => { onEdit(s); setView("entry"); }} className="text-[10px] opacity-0 group-hover:opacity-100" style={{ color: t.dim }}>Edit</button>
                       <button onClick={() => del(s.id)} className="text-[10px] opacity-0 group-hover:opacity-100" style={{ color: t.danger }}>✕</button>
                     </div>
@@ -1358,11 +1857,16 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
   const [period, setPeriod] = useState<Period>("Endline");
   const isSpedSchool = school.name === SPED_SCHOOL_NAME;
   const [cohort, setCohort] = useState<"All"|"Regular"|"SPED">("All");
+  const [exporting, setExporting] = useState(false);
 
   const isSpedGrade = (g: string) => g.startsWith("SPED");
   const allGrades = getGrades(school);
+  // In "All Students" the SPED school counts each SPED grade together with its
+  // regular grade (Kinder + SPED Kinder, Grade 1 + SPED Grade 1, …), so the table
+  // shows one row per grade level; the Regular / SPED filters keep rows separate.
+  const mergeSped = isSpedSchool && cohort === "All";
   const grades = !isSpedSchool || cohort === "All"
-    ? allGrades
+    ? (mergeSped ? allGrades.filter(g => !isSpedGrade(g)) : allGrades)
     : cohort === "SPED"
       ? allGrades.filter(isSpedGrade)
       : allGrades.filter(g => !isSpedGrade(g));
@@ -1374,16 +1878,54 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
       : cohort === "SPED" ? isSpedGrade(s.gradeLevel) : !isSpedGrade(s.gradeLevel))
   );
 
+  /** Whether a student's grade belongs in this row — merged rows also take the SPED grade. */
+  const inGrade = (g: string, grade: GradeLevel) =>
+    mergeSped ? g.replace(/^SPED /, "") === grade : g === grade;
   const cntBMI = (grade:GradeLevel|null, sex:Sex|null, st:BMIStatus) =>
-    f.filter(s=>(grade===null||s.gradeLevel===grade)&&(sex===null||s.sex===sex)&&s.bmiStatus===st).length;
+    f.filter(s=>(grade===null||inGrade(s.gradeLevel,grade))&&(sex===null||s.sex===sex)&&s.bmiStatus===st).length;
   const cntHFA = (grade:GradeLevel|null, sex:Sex|null, st:HFAStatus) =>
-    f.filter(s=>(grade===null||s.gradeLevel===grade)&&(sex===null||s.sex===sex)&&s.hfaStatus===st).length;
+    f.filter(s=>(grade===null||inGrade(s.gradeLevel,grade))&&(sex===null||s.sex===sex)&&s.hfaStatus===st).length;
   const cntFlag = (grade:GradeLevel|null, sex:Sex|null, field:keyof Student, val:string) =>
-    f.filter(s=>(grade===null||s.gradeLevel===grade)&&(sex===null||s.sex===sex)&&s[field]===val).length;
+    f.filter(s=>(grade===null||inGrade(s.gradeLevel,grade))&&(sex===null||s.sex===sex)&&s[field]===val).length;
+  /** Learners in this row with any of these Yes/No fields answered "Yes". */
+  const cntAny = (grade:GradeLevel|null, sex:Sex|null, fields:(keyof Student)[]) =>
+    f.filter(s=>(grade===null||inGrade(s.gradeLevel,grade))&&(sex===null||s.sex===sex)&&fields.some(k=>s[k]==="Yes")).length;
   const N = (v:number, color?:string) => (
     <td className="px-2 py-2 text-center text-xs" style={{ fontFamily:"'JetBrains Mono',monospace", color:v===0?t.faint:(color??t.accent) }}>{v}</td>
   );
   const sx = (lbl:"M"|"F"|"Total"): Sex|null => lbl==="Total"?null:lbl;
+
+  /**
+   * The rows shown below, flattened for the Excel export. Built from the same
+   * cnt* helpers as the table, so the file always matches what is on screen —
+   * including which grade levels the SPED cohort merge folds together.
+   */
+  const summaryMatrix = (): SummaryMatrixRow[] => {
+    const perGrade = (grade: GradeLevel|null, label: string): SummaryMatrixRow[] =>
+      (["M","F","Total"] as const).map(lbl => {
+        const s = sx(lbl);
+        return {
+          grade: label,
+          sex: lbl,
+          bmi: BMI_STATUSES.map(st=>cntBMI(grade,s,st)),
+          hfa: HFA_STATUSES.map(st=>cntHFA(grade,s,st)),
+          pregnantYoung: cntAny(grade,s,["pregnant","hasYoungChildren"]),
+          dewormed: cntFlag(grade,s,"dewormed","Yes"),
+          fourPs: cntFlag(grade,s,"fourPs","Yes"),
+          sbfp: cntFlag(grade,s,"sbfpPreviousYears","Yes"),
+        };
+      });
+    return [...grades.flatMap(g => perGrade(g, g)), ...perGrade(null, "GRAND TOTAL")];
+  };
+
+  /** School year printed on the Form 2 export — the one most of these records use. */
+  const syForExport = () => {
+    const tally = new Map<string, number>();
+    for (const s of f) if (s.sy) tally.set(s.sy, (tally.get(s.sy) ?? 0) + 1);
+    let best = "2025-2026", n = 0;
+    for (const [sy, c] of tally) if (c > n) { best = sy; n = c; }
+    return best;
+  };
 
   return (
     <div className="flex flex-col gap-5">
@@ -1392,7 +1934,7 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
           <h1 className="text-lg font-semibold" style={{ color:t.text }}>Summary Table</h1>
           <p className="text-xs mt-0.5" style={{ color:t.dim }}>
             {school.name} — SY 2025–2026
-            {isSpedSchool && cohort !== "All" ? ` · ${cohort} only` : ""}
+            {isSpedSchool && (cohort === "All" ? " · SPED merged into grade levels" : ` · ${cohort} only`)}
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
@@ -1408,13 +1950,38 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
               ))}
             </div>
           )}
-          <div className="flex gap-1.5">
+          <div className="flex items-center gap-1.5">
             {PERIODS.map(p => (
               <button key={p} onClick={() => setPeriod(p)} className="px-3 py-1.5 text-xs rounded-sm cursor-pointer border"
-                style={period===p ? { background:PC[p]+"20", color:PC[p], borderColor:PC[p]+"40" } : { background:t.surface, color:t.dim, borderColor:t.border }}>
+                style={period===p ? { background:t.period[p]+"20", color:t.period[p], borderColor:t.period[p]+"40" } : { background:t.surface, color:t.dim, borderColor:t.border }}>
                 {p}
               </button>
             ))}
+            <button
+              title="SBFP Form 2 — Summary of Beneficiaries & Start of Feeding"
+              onClick={async () => {
+                setExporting(true);
+                try {
+                  const { exportSummaryToExcel } = await import("@/lib/sbfp-export");
+                  await exportSummaryToExcel({
+                    school, period, cohort, sy: syForExport(),
+                    bmiStatuses: BMI_STATUSES,
+                    hfaStatuses: HFA_STATUSES,
+                    rows: summaryMatrix(),
+                  });
+                } finally { setExporting(false); }
+              }}
+              disabled={f.length === 0}
+              className="px-3 py-1.5 text-xs font-semibold rounded-sm border transition-colors"
+              style={{
+                background: f.length === 0 ? t.surface2 : t.surface,
+                color: f.length === 0 ? t.faint : t.accent,
+                borderColor: f.length === 0 ? t.border : t.accent + "60",
+                cursor: f.length === 0 ? "not-allowed" : "pointer",
+              }}
+            >
+              {exporting ? "Exporting…" : "↓ Export Form 2"}
+            </button>
           </div>
         </div>
       </div>
@@ -1425,14 +1992,14 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
             <tr style={{ borderBottom:`1px solid ${t.border}` }}>
               <th rowSpan={2} className="px-3 py-2 text-left text-[9px] tracking-widest uppercase" style={{ color:t.dim, borderRight:`1px solid ${t.border}` }}>Grade</th>
               <th rowSpan={2} className="px-2 py-2 text-[9px] tracking-widest uppercase" style={{ color:t.dim, borderRight:`1px solid ${t.border}` }}>Sex</th>
-              <th colSpan={6} className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:"#00c9ff", borderRight:`1px solid ${t.border}` }}>Body Mass Index (BMI)</th>
-              <th colSpan={5} className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:"#b8ff4f", borderRight:`1px solid ${t.border}` }}>Height-for-Age (HFA)</th>
-              <th className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:"#ff9f4b", borderRight:`1px solid ${t.border}` }}>4P's</th>
-              <th className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:"#ff9f4b" }}>SBFP</th>
+              <th colSpan={6} className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:t.blue, borderRight:`1px solid ${t.border}` }}>Body Mass Index (BMI)</th>
+              <th colSpan={5} className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:t.lime, borderRight:`1px solid ${t.border}` }}>Height-for-Age (HFA)</th>
+              <th className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:t.orange, borderRight:`1px solid ${t.border}` }}>4P's</th>
+              <th className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:t.orange }}>SBFP</th>
             </tr>
             <tr style={{ borderBottom:`1px solid ${t.border}` }}>
               {["Sev. Wasted","Wasted","Normal","Overweight","Obese","Total","Sev. Stunted","Stunted","Normal","Tall","Total"].map((h,i) => (
-                <th key={`${h}${i}`} className="px-2 py-1.5 text-[8px] tracking-widest uppercase text-center" style={{ color:t.faint, borderRight:`1px solid ${i===5||i===10?t.border:t.surfaceDeep}` }}>{h}</th>
+                <th key={`${h}${i}`} className="px-2 py-1.5 text-[8px] tracking-widest uppercase text-center" style={{ color:t.dim, borderRight:`1px solid ${i===5||i===10?t.border:t.surfaceDeep}` }}>{h}</th>
               ))}
               <th style={{ borderRight:`1px solid ${t.border}` }} />
               <th />
@@ -1452,9 +2019,9 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
                     onMouseEnter={e=>{ if(!isTotal) e.currentTarget.style.background=t.hover; }} onMouseLeave={e=>{ e.currentTarget.style.background=isTotal?t.surfaceDeep:"transparent"; }}>
                     {ri===0 && <td rowSpan={3} className="px-3 py-2 text-xs font-medium align-middle" style={{ color:t.sub, borderRight:`1px solid ${t.border}` }}>{grade}</td>}
                     <td className="px-2 py-2 text-center text-xs" style={{ color:isTotal?t.danger:t.dim, fontWeight:isTotal?600:400, borderRight:`1px solid ${t.border}` }}>{lbl}</td>
-                    {bmis.map((v,i)=>N(v))}{N(bT,"#00c9ff")}
-                    {hfas.map((v,i)=>N(v))}{N(hT,"#b8ff4f")}
-                    {N(fp,"#ff9f4b")}{N(sb,"#ff9f4b")}
+                    {bmis.map((v,i)=>N(v))}{N(bT,t.blue)}
+                    {hfas.map((v,i)=>N(v))}{N(hT,t.lime)}
+                    {N(fp,t.orange)}{N(sb,t.orange)}
                   </tr>
                 );
               })
@@ -1469,9 +2036,9 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
                 <tr key={`grand-${lbl}`} style={{ borderBottom:`1px solid ${t.border}`, background:t.grandBg }}>
                   {lbl==="M" && <td rowSpan={3} className="px-3 py-2 text-xs font-semibold align-middle" style={{ color:t.accent, borderRight:`1px solid ${t.border}` }}>GRAND TOTAL</td>}
                   <td className="px-2 py-2 text-center text-xs font-semibold" style={{ color:t.danger, borderRight:`1px solid ${t.border}` }}>{lbl}</td>
-                  {bmis.map((v,i)=>N(v))}{N(bT,"#00c9ff")}
-                  {hfas.map((v,i)=>N(v))}{N(hT,"#b8ff4f")}
-                  {N(fp,"#ff9f4b")}{N(sb,"#ff9f4b")}
+                  {bmis.map((v,i)=>N(v))}{N(bT,t.blue)}
+                  {hfas.map((v,i)=>N(v))}{N(hT,t.lime)}
+                  {N(fp,t.orange)}{N(sb,t.orange)}
                 </tr>
               );
             })}
@@ -1502,13 +2069,13 @@ function Analytics({ students, school }: { students:Student[]; school:School }) 
     return {
       period: p,
       total: uniqueCount(pe),
-      bmi: BMI_STATUSES.map(st => ({ st, n: pe.filter(s => s.bmiStatus === st).length, c: BMI_C[st] })),
-      hfa: HFA_STATUSES.map(st => ({ st, n: pe.filter(s => s.hfaStatus === st).length, c: HFA_C[st] })),
+      bmi: BMI_STATUSES.map(st => ({ st, n: pe.filter(s => s.bmiStatus === st).length, c: t.bmi[st] })),
+      hfa: HFA_STATUSES.map(st => ({ st, n: pe.filter(s => s.hfaStatus === st).length, c: t.hfa[st] })),
     };
   });
   const maxTotal = Math.max(...periodData.map(d=>d.total),1);
-  const allBMI = BMI_STATUSES.map(st=>({ label:st, val:uniqAll.filter(s=>s.bmiStatus===st).length, color:BMI_C[st] }));
-  const allHFA = HFA_STATUSES.map(st=>({ label:st, val:uniqAll.filter(s=>s.hfaStatus===st).length, color:HFA_C[st] }));
+  const allBMI = BMI_STATUSES.map(st=>({ label:st, val:uniqAll.filter(s=>s.bmiStatus===st).length, color:t.bmi[st] }));
+  const allHFA = HFA_STATUSES.map(st=>({ label:st, val:uniqAll.filter(s=>s.hfaStatus===st).length, color:t.hfa[st] }));
 
   return (
     <div className="flex flex-col gap-6">
@@ -1538,9 +2105,9 @@ function Analytics({ students, school }: { students:Student[]; school:School }) 
         <div className="flex items-end gap-6">
           {periodData.map(d=>(
             <div key={d.period} className="flex-1 flex flex-col items-center gap-2">
-              <span className="text-sm font-semibold" style={{ fontFamily:"'JetBrains Mono',monospace", color:PC[d.period] }}>{d.total}</span>
-              <div className="w-full rounded-sm" style={{ height:`${(d.total/maxTotal)*80}px`, minHeight:"2px", background:PC[d.period]+"60" }} />
-              <span className="text-[10px]" style={{ color:PC[d.period] }}>{d.period}</span>
+              <span className="text-sm font-semibold" style={{ fontFamily:"'JetBrains Mono',monospace", color:t.period[d.period] }}>{d.total}</span>
+              <div className="w-full rounded-sm" style={{ height:`${(d.total/maxTotal)*80}px`, minHeight:"2px", background:t.period[d.period]+"60" }} />
+              <span className="text-[10px]" style={{ color:t.period[d.period] }}>{d.period}</span>
             </div>
           ))}
         </div>
@@ -1569,7 +2136,7 @@ function Analytics({ students, school }: { students:Student[]; school:School }) 
           const total = d.total||1;
           return (
             <div key={`bmi-${d.period}`} style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-4">
-              <div className="text-[9px] tracking-widest uppercase mb-3" style={{ color:PC[d.period] }}>{d.period} — BMI</div>
+              <div className="text-[9px] tracking-widest uppercase mb-3" style={{ color:t.period[d.period] }}>{d.period} — BMI</div>
               {d.bmi.map(b=>(
                 <div key={b.st} className="flex items-center gap-2 mb-1.5">
                   <span className="text-[9px] w-20 truncate" style={{ color:t.dim }}>{b.st}</span>
@@ -1588,7 +2155,7 @@ function Analytics({ students, school }: { students:Student[]; school:School }) 
           const total = d.total||1;
           return (
             <div key={`hfa-${d.period}`} style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-4">
-              <div className="text-[9px] tracking-widest uppercase mb-3" style={{ color:PC[d.period] }}>{d.period} — HFA</div>
+              <div className="text-[9px] tracking-widest uppercase mb-3" style={{ color:t.period[d.period] }}>{d.period} — HFA</div>
               {d.hfa.map(h=>(
                 <div key={h.st} className="flex items-center gap-2 mb-1.5">
                   <span className="text-[9px] w-20 truncate" style={{ color:t.dim }}>{h.st}</span>
@@ -1614,6 +2181,7 @@ export default function App() {
   const [selectedSchool, setSelectedSchool] = useState<School|null>(null);
   const [students, setStudents] = useState<Student[]>(SEED);
   const [schools, setSchools] = useState<School[]>([...INIT_ES, ...INIT_HS]);
+  const [feedbacks, setFeedbacks] = useState<SchoolFeedback[]>(FEEDBACK_SEED);
   const [editingStudent, setEditingStudent] = useState<Student|null>(null);
 
   const schoolStudents = useMemo(
@@ -1631,7 +2199,10 @@ export default function App() {
         <Sidebar view={view} setView={setView} selectedSchool={selectedSchool} setSelectedSchool={setSelectedSchool}
           themeMode={themeMode} toggleTheme={() => setThemeMode(m=>m==="dark"?"light":"dark")} schools={schools} />
         <main className="flex-1 overflow-y-auto p-8">
-          {view==="district" && <DistrictDashboard students={students} schools={schools} />}
+          {view==="district" && <DistrictDashboard students={students} schools={schools}
+            feedbacks={feedbacks} onOpenFeedbacks={()=>setView("feedback")} />}
+          {view==="feedback" && <Feedbacks feedbacks={feedbacks} setFeedbacks={setFeedbacks}
+            schools={schools} defaultSchool={selectedSchool} />}
           {view==="schools" && <SchoolsList students={students} schools={schools} setSchools={setSchools}
             setStudents={setStudents} onSelect={handleSelectSchool} />}
           {view==="dashboard" && selectedSchool && <Dashboard students={schoolStudents} school={selectedSchool} />}
