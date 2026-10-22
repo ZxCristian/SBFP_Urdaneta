@@ -87,7 +87,7 @@ export function SignInButtons() {
  * gate-materialized — behind the gate the next request signs the viewer
  * straight back in, so a sign-out control there is a broken loop.
  */
-export function UserButton() {
+export function UserButton({ compact = false }: { compact?: boolean }) {
   const user = useCurrentUser();
   // Sign-out can take a moment (and can fail when deployed), so the control
   // shows it is working and cannot be fired twice.
@@ -100,7 +100,7 @@ export function UserButton() {
   if (!user) return null;
   const label = user.displayName ?? user.primaryEmail ?? "Account";
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2" title={compact ? label : undefined}>
       {user.profileImageUrl ? (
         <img
           src={user.profileImageUrl}
@@ -112,7 +112,9 @@ export function UserButton() {
           {label.charAt(0).toUpperCase()}
         </span>
       )}
-      <span className="text-sm font-medium">{label}</span>
+      {/* A phone's top bar has room for the avatar, not the whole name; the
+          drawer behind it still shows the full identity. */}
+      {!compact && <span className="text-sm font-medium">{label}</span>}
       {authEnabled && !gateSession && (
         <button
           type="button"

@@ -12,6 +12,7 @@ import {
   projectRoot,
   readAppEnv,
 } from "./with-app-env.mjs";
+import { authEnabledFromEnvValue } from "./check-auth-invariant.mjs";
 
 const execFileAsync = promisify(execFile);
 const WRAPPER = join(projectRoot(), "scripts/with-app-env.mjs");
@@ -59,8 +60,12 @@ test("an explicit process-env override wins over the file", () => {
   assert.equal(merged.PATH, "/usr/bin");
 });
 
-test("the template ships auth off", () => {
-  assert.deepEqual(readAppEnv(projectRoot()), { VITE_AUTH_ENABLED: "false" });
+test("this app carries no VITE_AUTH_ENABLED override", () => {
+  // Sign-in is ON here, so the key is deleted from `.grok/app-env.json` (see the
+  // auth skill's "Turning sign-in on"): dev, build and preview all resolve the
+  // flag to on, and the deployer's env is what decides it once deployed.
+  assert.equal("VITE_AUTH_ENABLED" in readAppEnv(projectRoot()), false);
+  assert.equal(authEnabledFromEnvValue(readAppEnv(projectRoot()).VITE_AUTH_ENABLED), true);
 });
 
 test("vite loadEnv resolves the wrapped value", () => {
@@ -74,13 +79,15 @@ test("vite loadEnv resolves the wrapped value", () => {
 });
 
 test("the wrapped command runs with the app env applied", async () => {
+  // The file no longer carries the flag, so the child must see it *unset* — the
+  // wrapper applies what the file says and invents nothing.
   const { stdout } = await execFileAsync(process.execPath, [
     WRAPPER,
     process.execPath,
     "-e",
     PRINT_FLAG,
   ]);
-  assert.equal(stdout, "false");
+  assert.equal(stdout, "undefined");
 });
 
 test("the wrapped command sees an explicit override, not the file value", async () => {
@@ -124,5 +131,5 @@ test("the CLI still runs when invoked through a symlinked path", async () => {
     "-e",
     PRINT_FLAG,
   ]);
-  assert.equal(stdout, "false");
+  assert.equal(stdout, "undefined");
 });

@@ -58,8 +58,17 @@ test("non-.sql entries are dropped (readdir also yields the auth/ directory)", (
 
 test("the auth schema ships outside the globbed directory", () => {
   const migrationsDir = join(projectRoot(), "migrations");
-  assert.deepEqual(pendingMigrations(readdirSync(migrationsDir), []), []);
-  assert.ok(readdirSync(join(migrationsDir, "auth")).includes("0001_auth.sql"));
+  assert.ok(
+    readdirSync(join(migrationsDir, "auth")).includes("0001_auth.sql"),
+    "the source copy lives outside the globbed directory",
+  );
+  // This app has sign-in ON, so the schema was copied up and now applies with
+  // the app's own migrations — in filename order, so the identity tables exist
+  // before anything that joins against them.
+  const applied = pendingMigrations(readdirSync(migrationsDir), []).map((m) => m.name);
+  assert.ok(applied.includes("0001_auth.sql"), "the copied auth schema is applied");
+  assert.ok(applied.length > 1, "the app's own schema applies alongside it");
+  assert.deepEqual(applied, [...applied].sort(), "and in name order");
 });
 
 test("this workspace's auth schema copy is byte-identical to its source", () => {

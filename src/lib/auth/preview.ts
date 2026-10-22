@@ -29,4 +29,13 @@ export const GROK_ISSUER_DEFAULT = "https://auth.grok.me";
  * this list (wildcard-matched), so the OAuth `redirect_uri` becomes the concrete
  * `https://<preview-host>/api/auth/oauth2/callback/...` the broker allows.
  */
-export const PREVIEW_ALLOWED_HOSTS = ["*.grok-sandbox.com"] as const;
+export const PREVIEW_ALLOWED_HOSTS = [
+  "*.grok-sandbox.com",
+  // The workspace preview proxy serves the same app on
+  // `<port>-<workspace-id>.daytonaproxy01.net`. That IS the origin a visitor's
+  // browser sends, so it has to be trusted here or Better Auth refuses the
+  // sign-in POST with "Invalid origin" (FORBIDDEN) before it ever compares the
+  // password. Deployed apps are unaffected: they take the explicit
+  // `BETTER_AUTH_URL` branch in `server.ts`, which never consults this list.
+  "*.daytonaproxy01.net",
+] as const;

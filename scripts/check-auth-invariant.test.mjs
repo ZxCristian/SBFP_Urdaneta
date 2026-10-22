@@ -12,7 +12,7 @@ import {
   compareAuthInvariant,
   probeDevAuthEnabled,
 } from "./check-auth-invariant.mjs";
-import { projectRoot } from "./with-app-env.mjs";
+import { projectRoot, readAppEnv } from "./with-app-env.mjs";
 
 /**
  * The JSON body `/__app-env` would serve. Do not start a real Vite server —
@@ -90,9 +90,15 @@ test("only a divergence warns the smoke verdict", () => {
   }
 });
 
-test("the build side resolves the template's shipped app-env", () => {
-  assert.equal(buildAuthEnabled(projectRoot(), {}), false);
+test("the build side resolves this app's app-env, and an override still wins", () => {
+  // Sign-in is ON in this app, so `.grok/app-env.json` carries no
+  // VITE_AUTH_ENABLED key at all and the build resolves it to on (see the auth
+  // skill's "Turning sign-in on"). The deployer's own env is what decides the
+  // deployed value, and an explicit override must still win.
+  const fromFile = authEnabledFromEnvValue(readAppEnv(projectRoot()).VITE_AUTH_ENABLED);
+  assert.equal(buildAuthEnabled(projectRoot(), {}), fromFile);
   assert.equal(buildAuthEnabled(projectRoot(), { VITE_AUTH_ENABLED: "true" }), true);
+  assert.equal(buildAuthEnabled(projectRoot(), { VITE_AUTH_ENABLED: "false" }), false);
 });
 
 test("the CLI reports rather than silently passing when run via a symlink", async () => {

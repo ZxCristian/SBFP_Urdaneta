@@ -1,21 +1,33 @@
 import { useState, useMemo, createContext, useContext, useEffect, useRef, Fragment, type CSSProperties } from "react";
 // Type-only: erased at build time, so ExcelJS stays out of the initial bundle.
 import type { SummaryMatrixRow } from "@/lib/sbfp-export";
+// What the schools sent up through the teacher website (`/teacher`).
+import {
+  removeRecord,
+  saveProfile,
+  updateRecord,
+  updateTeacherFeedback,
+  useTeacherStore,
+} from "@/lib/sbfp-store";
+import { UserButton } from "@/lib/auth/gates";
+import { useAccess } from "@/lib/use-access";
+import AccountsPanel from "@/components/accounts-panel";
+import { ConfirmDialog, type ConfirmPalette } from "@/components/confirm-dialog";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
-type GradeLevel =
+export type GradeLevel =
   |"Kinder"|"Grade 1"|"Grade 2"|"Grade 3"|"Grade 4"|"Grade 5"|"Grade 6"
   |"Grade 7"|"Grade 8"|"Grade 9"|"Grade 10"|"Grade 11"|"Grade 12"
   |"SPED"|"SPED Kinder"|"SPED Grade 1"|"SPED Grade 2"|"SPED Grade 3"|"SPED Grade 4"|"SPED Grade 5"|"SPED Grade 6";
-type Sex = "M"|"F";
-type Period = "Baseline"|"Midline"|"Endline";
-type SchoolType = "Elementary"|"High School";
-type BMIStatus = "Severely Wasted"|"Wasted"|"Normal"|"Overweight"|"Obese"|"";
-type HFAStatus = "Severely Stunted"|"Stunted"|"Normal"|"Tall"|"";
-type YesNo = "Yes"|"No"|"";
-type View = "district"|"feedback"|"schools"|"dashboard"|"records"|"entry"|"table"|"analytics";
+export type Sex = "M"|"F";
+export type Period = "Baseline"|"Midline"|"Endline";
+export type SchoolType = "Elementary"|"High School";
+export type BMIStatus = "Severely Wasted"|"Wasted"|"Normal"|"Overweight"|"Obese"|"";
+export type HFAStatus = "Severely Stunted"|"Stunted"|"Normal"|"Tall"|"";
+export type YesNo = "Yes"|"No"|"";
+type View = "district"|"feedback"|"schools"|"accounts"|"dashboard"|"records"|"entry"|"table"|"analytics";
 
-interface School {
+export interface School {
   id: string; name: string; type: SchoolType;
   /** SBFP form header block (Form 1A export, and Form 2's field block) */
   division: string;
@@ -29,12 +41,18 @@ interface School {
   lastMileSchool: YesNo;
 }
 /** The editable form header fields, minus identity. */
-type SchoolFormDetails = Pick<School, "division"|"cityMunicipalityBarangay"|"schoolIdNumber"|"principal"|"focalPerson"|"dateStartFeeding"|"lastMileSchool">;
-const EMPTY_FORM_DETAILS: SchoolFormDetails = {
+export type SchoolFormDetails = Pick<School, "division"|"cityMunicipalityBarangay"|"schoolIdNumber"|"principal"|"focalPerson"|"dateStartFeeding"|"lastMileSchool">;
+export const EMPTY_FORM_DETAILS: SchoolFormDetails = {
   division: "Urdaneta City", cityMunicipalityBarangay: "", schoolIdNumber: "", principal: "", focalPerson: "",
   dateStartFeeding: "", lastMileSchool: "",
 };
-const FORM_DETAIL_FIELDS: [keyof SchoolFormDetails, string][] = [
+/** The school-list columns a teacher's profile owns — see the sync in `App`. */
+const SCHOOL_HEADER_KEYS = [
+  "division", "cityMunicipalityBarangay", "schoolIdNumber", "principal", "focalPerson",
+  "dateStartFeeding", "lastMileSchool",
+] as const;
+
+export const FORM_DETAIL_FIELDS: [keyof SchoolFormDetails, string][] = [
   ["division", "Division"],
   ["cityMunicipalityBarangay", "City/Municipality/Barangay"],
   ["schoolIdNumber", "School ID Number"],
@@ -43,7 +61,7 @@ const FORM_DETAIL_FIELDS: [keyof SchoolFormDetails, string][] = [
   ["dateStartFeeding", "Date of Start of Feeding"],
   ["lastMileSchool", "Last Mile School"],
 ];
-interface Student {
+export interface Student {
   id: string; schoolId: string; period: Period; sy: string;
   name: string; sex: Sex|""; gradeLevel: GradeLevel|"";
   dateOfBirth: string; dateOfWeighing: string;
@@ -56,11 +74,11 @@ interface Student {
 }
 
 // ── School feedback — what the schools send up, aggregated district-wide ───────
-type FeedbackCategory =
+export type FeedbackCategory =
   |"Feeding Implementation"|"Nutrition Data"|"Supplies & Logistics"
   |"Learner Concerns"|"System / Forms"|"Other";
-type FeedbackStatus = "New"|"Acknowledged"|"Resolved";
-interface SchoolFeedback {
+export type FeedbackStatus = "New"|"Acknowledged"|"Resolved";
+export interface SchoolFeedback {
   id: string;
   /** The school that sent it — the Feedbacks page shows every school together. */
   schoolId: string;
@@ -76,15 +94,21 @@ interface SchoolFeedback {
   status: FeedbackStatus;
   /** The district's answer back to the school, once written. */
   response?: string;
+  /**
+   * Set when the entry came in through the teacher website rather than the
+   * district's own Feedbacks form — the feed shows a "Teacher Portal" tag so
+   * the district can tell a school's submission from its own records.
+   */
+  origin?: "Teacher Portal";
 }
-const FEEDBACK_CATEGORIES: FeedbackCategory[] = [
+export const FEEDBACK_CATEGORIES: FeedbackCategory[] = [
   "Feeding Implementation","Nutrition Data","Supplies & Logistics",
   "Learner Concerns","System / Forms","Other",
 ];
-const FEEDBACK_STATUSES: FeedbackStatus[] = ["New","Acknowledged","Resolved"];
+export const FEEDBACK_STATUSES: FeedbackStatus[] = ["New","Acknowledged","Resolved"];
 
 // ── Theme ──────────────────────────────────────────────────────────────────────
-interface TC {
+export interface TC {
   bg: string; surface: string; surface2: string; surfaceDeep: string;
   hover: string; border: string; text: string; sub: string; dim: string; faint: string;
   accent: string; accentBg: string; accentText: string;
@@ -124,7 +148,7 @@ const ThemeCtx = createContext<TC>(DARK);
 const useT = () => useContext(ThemeCtx);
 
 // ── Schools (initial constants) ────────────────────────────────────────────────
-const INIT_ES: School[] = [
+export const INIT_ES: School[] = [
   "Anonas East Elementary School",
   "Anonas Elementary School",
   "Bactad East Elementary School",
@@ -172,7 +196,7 @@ const INIT_ES: School[] = [
   "Vicente Taaca Memorial School",
 ].map((name, i) => ({ id:`es${String(i+1).padStart(2,"0")}`, name, type:"Elementary" as SchoolType, ...EMPTY_FORM_DETAILS }));
 
-const INIT_HS: School[] = [
+export const INIT_HS: School[] = [
   "Anonas National High School",
   "Bactad East National High School",
   "Badipa National High School",
@@ -195,14 +219,14 @@ const ES_GRADES_WITH_SPED: GradeLevel[] = [
   "SPED Kinder","SPED Grade 1","SPED Grade 2","SPED Grade 3","SPED Grade 4","SPED Grade 5","SPED Grade 6",
 ];
 const HS_GRADES: GradeLevel[] = ["Grade 7","Grade 8","Grade 9","Grade 10","Grade 11","Grade 12"];
-const PERIODS: Period[] = ["Baseline","Midline","Endline"];
-const BMI_STATUSES: BMIStatus[] = ["Severely Wasted","Wasted","Normal","Overweight","Obese"];
-const HFA_STATUSES: HFAStatus[] = ["Severely Stunted","Stunted","Normal","Tall"];
+export const PERIODS: Period[] = ["Baseline","Midline","Endline"];
+export const BMI_STATUSES: BMIStatus[] = ["Severely Wasted","Wasted","Normal","Overweight","Obese"];
+export const HFA_STATUSES: HFAStatus[] = ["Severely Stunted","Stunted","Normal","Tall"];
 // Period / BMI / HFA data colours now come from the theme (t.period, t.bmi, t.hfa)
 // so day mode can use readable tones instead of the neon dark-mode set.
 
 const getSchool = (schools: School[], id: string) => schools.find(s => s.id === id);
-const SPED_SCHOOL_NAME = "Urdaneta 1 Central School";
+export const SPED_SCHOOL_NAME = "Urdaneta 1 Central School";
 const GRADE_ORDER: GradeLevel[] = [
   "Kinder","Grade 1","Grade 2","Grade 3","Grade 4","Grade 5","Grade 6",
   "SPED Kinder","SPED Grade 1","SPED Grade 2","SPED Grade 3","SPED Grade 4","SPED Grade 5","SPED Grade 6",
@@ -213,7 +237,7 @@ const gradeRank = (g: string) => {
   return i < 0 ? 99 : i;
 };
 const periodRank: Record<Period, number> = { Baseline: 0, Midline: 1, Endline: 2 };
-function sortRecords(list: Student[]): Student[] {
+export function sortRecords(list: Student[]): Student[] {
   return [...list].sort((a, b) => {
     const ga = gradeRank(a.gradeLevel);
     const gb = gradeRank(b.gradeLevel);
@@ -223,7 +247,7 @@ function sortRecords(list: Student[]): Student[] {
     return (periodRank[a.period] ?? 9) - (periodRank[b.period] ?? 9);
   });
 }
-const getGrades = (school: School|undefined): GradeLevel[] => {
+export const getGrades = (school: School|undefined): GradeLevel[] => {
   if (!school) return ES_GRADES;
   if (school.type === "High School") return HS_GRADES;
   // Only Urdaneta 1 Central School offers SPED Kinder–Grade 6
@@ -232,14 +256,14 @@ const getGrades = (school: School|undefined): GradeLevel[] => {
 };
 
 /** Unique person key (same student across Baseline/Midline/Endline) */
-const studentKey = (s: { name: string; dateOfBirth: string; sex: string; schoolId?: string }) =>
+export const studentKey = (s: { name: string; dateOfBirth: string; sex: string; schoolId?: string }) =>
   `${s.schoolId ?? ""}|${s.name}|${s.dateOfBirth}|${s.sex}`;
 
 /** Count unique students (not period records) */
-const uniqueCount = (list: Student[]) => new Set(list.map(studentKey)).size;
+export const uniqueCount = (list: Student[]) => new Set(list.map(studentKey)).size;
 
 /** One record per student, preferring Endline → Midline → Baseline (for accurate counts) */
-function uniqueStudents(list: Student[]): Student[] {
+export function uniqueStudents(list: Student[]): Student[] {
   const order: Record<Period, number> = { Endline: 0, Midline: 1, Baseline: 2 };
   const map = new Map<string, Student>();
   for (const s of list) {
@@ -257,7 +281,7 @@ const BENEFICIARY_GRADES: GradeLevel[] = ["Grade 2","Grade 3","Grade 4","Grade 5
  *  - Kinder & Grade 1 → always Primary
  *  - Grades 2–12: Primary = Severely Wasted, Secondary = Severely Stunted
  */
-function classifyBeneficiary(grade: string, bmiStatus: string, hfaStatus: string): "Primary"|"Secondary"|"" {
+export function classifyBeneficiary(grade: string, bmiStatus: string, hfaStatus: string): "Primary"|"Secondary"|"" {
   // Kinder / Grade 1 (regular or SPED) → always Primary
   if (grade === "Kinder" || grade === "Grade 1" || grade === "SPED Kinder" || grade === "SPED Grade 1") return "Primary";
   // SPED Grade 2–6 follow same severe rules as regular G2–6
@@ -269,7 +293,7 @@ function classifyBeneficiary(grade: string, bmiStatus: string, hfaStatus: string
 }
 
 /** Format date YYYY-MM-DD → MM/DD/YYYY for SBFP form */
-function formatDateMDY(iso: string): string {
+export function formatDateMDY(iso: string): string {
   if (!iso) return "";
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!m) return iso;
@@ -285,12 +309,12 @@ const WHO_HFA_M: [number,number][] = [[110.0,4.3],[116.0,4.5],[121.7,4.8],[127.3
 const WHO_HFA_F: [number,number][] = [[109.4,4.2],[115.1,4.5],[120.8,4.8],[126.3,5.2],[131.5,5.6],[136.8,5.9],[142.5,6.0],[147.6,6.0],[151.4,5.9],[153.7,5.8],[154.9,5.8],[155.6,5.7],[156.0,5.7],[156.3,5.7],[156.4,5.7]];
 
 // ── Helper Functions ───────────────────────────────────────────────────────────
-function calcBMI(w: string, h: string): string {
+export function calcBMI(w: string, h: string): string {
   const wn = parseFloat(w), hn = parseFloat(h) / 100;
   if (!wn || !hn || hn <= 0) return "";
   return (wn / (hn * hn)).toFixed(2);
 }
-function computeAge(dob: string): { years: string; months: string } {
+export function computeAge(dob: string): { years: string; months: string } {
   if (!dob) return { years:"", months:"" };
   const birth = new Date(dob), today = new Date();
   if (isNaN(birth.getTime()) || birth > today) return { years:"", months:"" };
@@ -300,7 +324,7 @@ function computeAge(dob: string): { years: string; months: string } {
   if (months < 0) { years--; months += 12; }
   return { years: String(years), months: String(months) };
 }
-function classifyBMI(bmi: string, ageYears: string, sex: string): BMIStatus {
+export function classifyBMI(bmi: string, ageYears: string, sex: string): BMIStatus {
   const b = parseFloat(bmi), age = parseInt(ageYears);
   if (!b || !age || age < 5 || age > 19 || (sex !== "M" && sex !== "F")) return "";
   const [med, sd] = (sex === "M" ? WHO_BMI_M : WHO_BMI_F)[Math.min(age - 5, 14)];
@@ -311,7 +335,7 @@ function classifyBMI(bmi: string, ageYears: string, sex: string): BMIStatus {
   if (z <= 2) return "Overweight";
   return "Obese";
 }
-function classifyHFA(height: string, ageYears: string, sex: string): HFAStatus {
+export function classifyHFA(height: string, ageYears: string, sex: string): HFAStatus {
   const h = parseFloat(height), age = parseInt(ageYears);
   if (!h || !age || age < 5 || age > 19 || (sex !== "M" && sex !== "F")) return "";
   const [med, sd] = (sex === "M" ? WHO_HFA_M : WHO_HFA_F)[Math.min(age - 5, 14)];
@@ -323,7 +347,7 @@ function classifyHFA(height: string, ageYears: string, sex: string): HFAStatus {
 }
 
 // ── Seed Data ──────────────────────────────────────────────────────────────────
-const EMPTY_STUDENT = (schoolId: string, period: Period|"" = ""): Omit<Student,"id"> => ({
+export const EMPTY_STUDENT = (schoolId: string, period: Period|"" = ""): Omit<Student,"id"> => ({
   schoolId, period: (period || "") as Period, sy:"2025-2026", name:"", sex:"", gradeLevel: "",
   dateOfBirth:"", dateOfWeighing:"", ageYears:"", ageMonths:"",
   weight:"", height:"", bmi:"", bmiStatus:"", hfaStatus:"",
@@ -546,14 +570,14 @@ const FEEDBACK_SEED: SchoolFeedback[] = FEEDBACK_ROWS
 const MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 /** ISO date → "Oct 02, 2026" */
-function shortDate(iso: string): string {
+export function shortDate(iso: string): string {
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!m) return iso;
   return `${MONTH_ABBR[Number(m[2]) - 1] ?? m[2]} ${m[3]}, ${m[1]}`;
 }
 
 /** ISO date → "today" / "6 days ago"; anything older stays an absolute date. */
-function ageLabel(iso: string): string {
+export function ageLabel(iso: string): string {
   const days = Math.floor((Date.now() - Date.parse(`${iso}T00:00:00`)) / 86400000);
   if (!Number.isFinite(days) || days < 0) return shortDate(iso);
   if (days === 0) return "today";
@@ -589,6 +613,19 @@ function Stars({ rating, color, size = 11 }: { rating: number; color: string; si
 }
 
 // ── Shared UI Primitives ───────────────────────────────────────────────────────
+/** The delete-warning dialog, in the console's theme. */
+const confirmPalette = (t: TC): ConfirmPalette => ({
+  surface: t.surface,
+  surface2: t.surfaceDeep,
+  border: t.border,
+  text: t.text,
+  sub: t.sub,
+  danger: t.danger,
+  dangerSoft: t.isDark ? "#ff4b4b22" : "#bc2f2f16",
+  dangerText: t.isDark ? "#100505" : "#ffffff",
+  font: "'Outfit',sans-serif",
+});
+
 function Pill({ label, color }: { label: string; color: string }) {
   return <span className="text-[9px] px-1.5 py-0.5 rounded-sm" style={{ background:color+"20", color, border:`1px solid ${color}40` }}>{label}</span>;
 }
@@ -614,7 +651,7 @@ function YesNoToggle({ value, onChange, t }: { value:YesNo; onChange:(v:YesNo)=>
   return (
     <div className="flex gap-1">
       {(["Yes","No"] as YesNo[]).map(v => (
-        <button key={v} onClick={() => onChange(v)} className="flex-1 py-2 text-xs rounded-sm cursor-pointer border transition-colors"
+        <button key={v} onClick={() => onChange(v)} className="flex-1 h-[38px] text-xs rounded-sm cursor-pointer border transition-colors"
           style={value===v ? { background:v==="Yes"?t.accentBg:t.danger+"15", color:v==="Yes"?t.accent:t.danger, borderColor:v==="Yes"?t.accent+"40":t.danger+"40" } : { background:t.surface2, color:t.dim, borderColor:t.border }}>
           {v}
         </button>
@@ -633,15 +670,20 @@ function Field({ label, children, span, t }: { label: string; children: React.Re
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
-function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, toggleTheme, schools }: {
+function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, toggleTheme, schools, registeredSchools, mobileOpen, onNavigate }: {
   view:View; setView:(v:View)=>void; selectedSchool:School|null; setSelectedSchool:(s:School|null)=>void;
   themeMode:"dark"|"light"; toggleTheme:()=>void; schools:School[];
+  /** How many schools hold a Teacher Portal account issued from this console. */
+  registeredSchools:number;
+  /** Narrow screens: the same panel slides in over the content as a drawer. */
+  mobileOpen:boolean; onNavigate:()=>void;
 }) {
   const t = useT();
   const nav: { id:View; label:string; icon:string; requiresSchool?:boolean }[] = [
     { id:"district", label:"District Dashboard", icon:"◎" },
     { id:"feedback", label:"Feedbacks", icon:"✉" },
     { id:"schools", label:"All Schools", icon:"◉" },
+    { id:"accounts", label:"Teacher Accounts", icon:"⚙" },
     { id:"dashboard", label:"Dashboard", icon:"▦", requiresSchool:true },
     { id:"records", label:"Student Records", icon:"☰", requiresSchool:true },
     { id:"entry", label:"Data Entry", icon:"✎", requiresSchool:true },
@@ -649,7 +691,8 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
     { id:"analytics", label:"Analytics", icon:"↗", requiresSchool:true },
   ];
   return (
-    <aside style={{ borderRight:`1px solid ${t.border}`, background:t.surface }} className="w-56 flex-shrink-0 flex flex-col h-full">
+    <aside style={{ borderRight:`1px solid ${t.border}`, background:t.surface }}
+      className={`w-56 max-w-[85vw] flex-shrink-0 flex flex-col h-full fixed md:static inset-y-0 left-0 z-40 transition-transform duration-200 ${mobileOpen ? "translate-x-0 shadow-2xl md:shadow-none" : "-translate-x-full"} md:translate-x-0`}>
       <div className="px-5 py-4" style={{ borderBottom:`1px solid ${t.border}` }}>
         <div className="flex items-center gap-3">
           <img src="/school-health-wheel.svg" alt="Coordinated School Health" width={44} height={44} className="w-11 h-11 flex-shrink-0" />
@@ -666,18 +709,18 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
           <div className="text-[11px] leading-snug font-medium" style={{ color:t.text }}>{selectedSchool.name}</div>
           <div className="flex items-center gap-1.5 mt-1.5">
             <Pill label={selectedSchool.type==="Elementary"?"ES":"HS"} color={selectedSchool.type==="Elementary"?t.blue:t.lime} />
-            <button onClick={() => { setSelectedSchool(null); setView("schools"); }} className="text-[9px] cursor-pointer ml-auto transition-colors" style={{ color:t.dim }}
+            <button onClick={() => { setSelectedSchool(null); setView("schools"); onNavigate(); }} className="text-[9px] cursor-pointer ml-auto transition-colors" style={{ color:t.dim }}
               onMouseEnter={e=>(e.currentTarget.style.color=t.sub)} onMouseLeave={e=>(e.currentTarget.style.color=t.dim)}>✕ clear</button>
           </div>
         </div>
       )}
 
-      <nav className="flex-1 p-3 flex flex-col gap-0.5 mt-1">
+      <nav className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-0.5 mt-1">
         {nav.map(item => {
           const disabled = !!(item.requiresSchool && !selectedSchool);
           const active = view === item.id;
           return (
-            <button key={item.id} onClick={() => !disabled && setView(item.id)} disabled={disabled}
+            <button key={item.id} onClick={() => { if (disabled) return; setView(item.id); onNavigate(); }} disabled={disabled}
               className="w-full flex items-center gap-3 px-3 py-2.5 rounded-sm text-left text-sm transition-all"
               style={{ color: disabled ? t.faint : active ? t.accent : t.dim, background: active ? t.accentBg : "transparent", cursor: disabled ? "not-allowed" : "pointer" }}
               onMouseEnter={e => { if (!disabled && !active) e.currentTarget.style.color = t.sub; }}
@@ -688,8 +731,21 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
         })}
       </nav>
 
-      <div className="p-4" style={{ borderTop:`1px solid ${t.border}` }}>
-        <button onClick={toggleTheme} className="w-full flex items-center gap-2 px-3 py-2 rounded-sm text-xs cursor-pointer transition-all mb-3"
+      <div className="side-safe p-4 flex flex-col gap-3" style={{ borderTop:`1px solid ${t.border}` }}>
+        <div style={{ color:t.sub }} className="flex flex-col gap-1">
+          <span className="text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>Signed in</span>
+          <UserButton />
+        </div>
+        <a href="/teacher" title="The website each school's teacher signs in to"
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-sm text-xs transition-all"
+          style={{ border:`1px solid ${t.border}`, background:t.surface2, color:t.sub, textDecoration:"none" }}>
+          <span>⇱</span>
+          <span className="flex-1">Teacher Portal</span>
+          <span style={{ fontFamily:"'JetBrains Mono',monospace", color: registeredSchools ? t.accent : t.dim }}>
+            {registeredSchools}/{schools.length}
+          </span>
+        </a>
+        <button onClick={toggleTheme} className="w-full flex items-center gap-2 px-3 py-2 rounded-sm text-xs cursor-pointer transition-all"
           style={{ border:`1px solid ${t.border}`, background:t.surface2, color:t.sub }}>
           <span>{themeMode === "dark" ? "☀" : "☾"}</span>
           {themeMode === "dark" ? "Day Mode" : "Night Mode"}
@@ -1080,6 +1136,12 @@ function Feedbacks({ feedbacks, setFeedbacks, schools, defaultSchool }: {
                   {school && <Pill label={school.type === "Elementary" ? "ES" : "HS"} color={school.type === "Elementary" ? t.blue : t.lime} />}
                   <span className="text-sm font-medium" style={{ color:t.text }}>{school?.name ?? "Unknown school"}</span>
                   <Pill label={f.category} color={categoryColor(f.category, t)} />
+                  {f.origin === "Teacher Portal" && (
+                    <span title="The school sent this from the Teacher Portal"
+                      className="text-[9px] px-1.5 py-0.5 rounded-sm" style={{ border:`1px solid ${t.border}`, color:t.sub, background:t.surface2 }}>
+                      ⇱ Teacher Portal
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-3">
                   <Stars rating={f.rating} color={t.orange} />
@@ -1158,6 +1220,8 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState("");
   const [newType, setNewType] = useState<SchoolType>("Elementary");
+  /** Deleting a school deletes its learner records too — warn before that. */
+  const [pendingDelete, setPendingDelete] = useState<School | null>(null);
 
   const filtered = useMemo(() => schools.filter(
     s => (typeFilter==="All"||s.type===typeFilter) && s.name.toLowerCase().includes(search.toLowerCase())
@@ -1248,15 +1312,18 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
         </div>
       )}
 
-      <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="overflow-hidden">
-        <table className="w-full text-sm">
+      <p className="text-[10px] md:hidden -mb-2" style={{ color: t.dim }}>
+        Swipe the table sideways for the period columns and actions →
+      </p>
+      <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[900px]">
           <thead>
             <tr style={{ borderBottom:`1px solid ${t.border}` }}>
               <th className="text-left px-4 py-3 text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>School</th>
               <th className="px-4 py-3 text-[9px] tracking-widest uppercase text-center" style={{ color:t.dim }}>Type</th>
               {PERIODS.map(p => <th key={p} className="px-4 py-3 text-[9px] tracking-widest uppercase text-center" style={{ color:t.period[p]+"99" }}>{p}</th>)}
               <th className="px-4 py-3 text-[9px] tracking-widest uppercase text-center" style={{ color:t.dim }}>Students</th>
-              <th className="px-4 py-3 w-32" />
+              <th className="px-4 py-3 w-56 text-right text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -1269,7 +1336,14 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
                 <tr className="group transition-colors" style={{ borderBottom:`1px solid ${t.border}` }}
                   onMouseEnter={e=>(e.currentTarget.style.background=t.hover)} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
                   <td className="px-4 py-2.5 font-medium">
-                    <span style={{ color: isEditing ? t.accent : t.text }}>{school.name}</span>
+                    {/* The row's own Open button sits at the far right, which on a
+                        phone is a sideways scroll away. Tapping the school's own
+                        name opens it too, right where the eye already is. */}
+                    <button type="button" onClick={() => onSelect(school)} title={`Open ${school.name}`}
+                      className="text-left transition-colors"
+                      style={{ color: isEditing ? t.accent : t.text, background:"none", border:"none", padding:0, font:"inherit", cursor:"pointer" }}
+                      onMouseEnter={e=>{ e.currentTarget.style.textDecoration="underline"; }}
+                      onMouseLeave={e=>{ e.currentTarget.style.textDecoration="none"; }}>{school.name}</button>
                   </td>
                   <td className="px-4 py-2.5 text-center">
                     <Pill label={school.type==="Elementary"?"ES":"HS"} color={school.type==="Elementary"?t.blue:t.lime} />
@@ -1281,17 +1355,36 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
                   ))}
                   <td className="px-4 py-2.5 text-center text-xs" style={{ fontFamily:"'JetBrains Mono',monospace", color:n>0?t.sub:t.faint }}>{n}</td>
                   <td className="px-4 py-2.5">
-                    <div className="flex items-center gap-2 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                    {/* Revealed on row hover / keyboard focus (see `.row-actions` in
+                        styles.css); a row being edited keeps Save / Cancel in view. */}
+                    <div
+                      className={
+                        isEditing
+                          ? "flex items-center gap-1.5 justify-end whitespace-nowrap"
+                          : "row-actions flex items-center gap-1.5 justify-end whitespace-nowrap"
+                      }
+                    >
                       {isEditing
                         ? <>
-                            <button onClick={saveEdit} className="text-xs cursor-pointer font-semibold" style={{ color:t.accent }}>Save</button>
-                            <button onClick={() => setEditingId(null)} className="text-xs cursor-pointer" style={{ color:t.dim }}>Cancel</button>
+                            <button onClick={saveEdit} className="text-xs px-3 py-1.5 rounded-sm cursor-pointer border font-semibold" style={{ background:t.accentBg, color:t.accent, borderColor:t.accent+"55" }}>Save</button>
+                            <button onClick={() => setEditingId(null)} className="text-xs px-3 py-1.5 rounded-sm cursor-pointer border" style={{ background:t.surface2, color:t.sub, borderColor:t.border }}>Cancel</button>
                           </>
                         : <>
-                            <button onClick={() => onSelect(school)} className="text-xs px-2 py-1 rounded-sm cursor-pointer border" style={{ background:t.accentBg, color:t.accent, borderColor:t.accent+"30" }}>Open →</button>
-                            <button onClick={() => startEdit(school)} className="text-xs cursor-pointer" style={{ color:t.sub }}>✏</button>
-                            <button onClick={() => deleteSchool(school.id)} className="text-xs cursor-pointer transition-colors" style={{ color:t.dim }}
-                              onMouseEnter={e=>(e.currentTarget.style.color=t.danger)} onMouseLeave={e=>(e.currentTarget.style.color=t.dim)}>✕</button>
+                            <button aria-label={`Open ${school.name}`} onClick={() => onSelect(school)}
+                              className="text-xs px-3 py-1.5 rounded-sm cursor-pointer border font-medium transition-colors"
+                              style={{ background:t.accentBg, color:t.accent, borderColor:t.accent+"55" }}
+                              onMouseEnter={e=>{ e.currentTarget.style.background=t.accent; e.currentTarget.style.color=t.accentText; }}
+                              onMouseLeave={e=>{ e.currentTarget.style.background=t.accentBg; e.currentTarget.style.color=t.accent; }}>Open</button>
+                            <button aria-label={`Edit ${school.name}`} onClick={() => startEdit(school)}
+                              className="text-xs px-3 py-1.5 rounded-sm cursor-pointer border transition-colors"
+                              style={{ background:t.surface2, color:t.sub, borderColor:t.border }}
+                              onMouseEnter={e=>{ e.currentTarget.style.color=t.text; e.currentTarget.style.borderColor=t.dim; }}
+                              onMouseLeave={e=>{ e.currentTarget.style.color=t.sub; e.currentTarget.style.borderColor=t.border; }}>Edit</button>
+                            <button aria-label={`Delete ${school.name}`} onClick={() => setPendingDelete(school)}
+                              className="text-xs px-3 py-1.5 rounded-sm cursor-pointer border transition-colors"
+                              style={{ background:"transparent", color:t.danger, borderColor:t.danger+"55" }}
+                              onMouseEnter={e=>{ e.currentTarget.style.background=t.danger; e.currentTarget.style.color=t.isDark ? "#100505" : "#ffffff"; }}
+                              onMouseLeave={e=>{ e.currentTarget.style.background="transparent"; e.currentTarget.style.color=t.danger; }}>Delete</button>
                           </>}
                     </div>
                   </td>
@@ -1351,6 +1444,35 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
           </tbody>
         </table>
       </div>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={`Delete ${pendingDelete?.name ?? "this school"}?`}
+        confirmLabel="Delete school"
+        cancelLabel="Keep school"
+        palette={confirmPalette(t)}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          if (pendingDelete) deleteSchool(pendingDelete.id);
+          setPendingDelete(null);
+        }}
+      >
+        {(() => {
+          const count = pendingDelete
+            ? students.filter(s => s.schoolId === pendingDelete.id).length
+            : 0;
+          return (
+            <>
+              The school is removed from the district list
+              {count > 0
+                ? " and its " + count + (count === 1 ? " learner record is" : " learner records are") + " deleted with it"
+                : ""}
+              , including the records the school encoded from the Teacher Portal.{" "}
+              <strong style={{ color: t.text }}>This cannot be undone.</strong>
+            </>
+          );
+        })()}
+      </ConfirmDialog>
     </div>
   );
 }
@@ -1447,9 +1569,18 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
   const [saved, setSaved] = useState(false);
   const [periodError, setPeriodError] = useState(false);
   const periodRef = useRef<HTMLDivElement>(null);
+  /**
+   * A status the user picked by hand outranks the WHO auto-classification for
+   * this record. Without this, recalculating on every measurement would silently
+   * throw the override away; with it, clearing the measurements still clears a
+   * status that was only ever computed.
+   */
+  const manualStatus = useRef({ bmi: false, hfa: false });
+  const resetManualStatus = () => { manualStatus.current = { bmi: false, hfa: false }; };
 
   // Populate form when editingStudent changes
   useEffect(() => {
+    resetManualStatus();
     if (editingStudent) {
       setForm({ ...editingStudent });
       setPeriod(editingStudent.period);
@@ -1463,6 +1594,8 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
   const cls = "w-full text-sm px-3 py-2 rounded-sm outline-none";
 
   const set = (key: keyof Omit<Student,"id">, val: string) => {
+    if (key === "bmiStatus") manualStatus.current.bmi = true;
+    if (key === "hfaStatus") manualStatus.current.hfa = true;
     setForm(f => {
       const next = { ...f, [key]: val };
       if (key === "dateOfBirth") {
@@ -1482,20 +1615,22 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
         next.bmi = calcBMI(weight, height);
       }
 
-      // Auto-classify BMI only when measurements / age / sex change — NOT when editing HFA status
+      // Auto-classify BMI only when measurements / age / sex change — NOT when editing HFA status.
+      // The computed value (even an empty one) replaces the old status, so a
+      // cleared weight can never leave a confident "Normal" behind.
       const bmiInputsChanged = measuresChanged || key === "dateOfBirth" || key === "sex" || key === "ageYears";
-      if (bmiInputsChanged) {
-        next.bmiStatus = classifyBMI(next.bmi || calcBMI(weight, height), ageY, sex) || next.bmiStatus;
+      if (bmiInputsChanged && !manualStatus.current.bmi) {
+        next.bmiStatus = classifyBMI(next.bmi || calcBMI(weight, height), ageY, sex);
       }
 
       // Auto-classify HFA only when height / age / sex change — NOT when editing BMI status
       const hfaInputsChanged = key === "height" || key === "dateOfBirth" || key === "sex" || key === "ageYears";
-      if (hfaInputsChanged) {
-        next.hfaStatus = classifyHFA(height, ageY, sex) || next.hfaStatus;
+      if (hfaInputsChanged && !manualStatus.current.hfa) {
+        next.hfaStatus = classifyHFA(height, ageY, sex);
       }
 
-      // Keep nutritionalStatus in sync with BMI status
-      next.nutritionalStatus = next.bmiStatus || next.nutritionalStatus;
+      // Keep nutritionalStatus in sync with BMI status (an auto field, not a separate one)
+      next.nutritionalStatus = next.bmiStatus;
 
       // Beneficiary class (Kinder/G1 = Primary; G2–12 from severe status) — still editable
       if (key !== "classificationOfBeneficiary") {
@@ -1534,6 +1669,7 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
     else {
       setPeriod(null);
       setPeriodError(false);
+      resetManualStatus();
       setForm(EMPTY_STUDENT(school.id, ""));
     }
   };
@@ -1542,8 +1678,17 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
 
   const ageYrs = parseInt(form.ageYears) || 0;
 
+  /** Why the WHO auto-status cannot be worked out yet, or null when it can. */
+  const autoHint = (() => {
+    if (!form.weight || !form.height) return null;
+    if (!form.sex) return "Auto status needs the learner's sex — the WHO 2007 tables differ for boys and girls.";
+    if (!form.dateOfBirth) return "Auto status needs the date of birth — the WHO 2007 tables start at age 5.";
+    if (ageYrs < 5 || ageYrs > 19) return `Age ${ageYrs} is outside the WHO 2007 tables (ages 5–19), so set BMI and HFA status by hand.`;
+    return null;
+  })();
+
   return (
-    <div className="flex flex-col gap-6 max-w-3xl">
+    <div className="flex flex-col gap-6 w-full max-w-7xl mx-auto">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-lg font-semibold" style={{ color:t.text }}>{editingStudent ? "Edit Student" : "Data Entry"}</h1>
@@ -1567,6 +1712,12 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
           )}
         </div>
       </div>
+
+      {/* Two columns on a wide screen: the learner + her measurements on the
+          left, the classification and yes/no block on the right, instead of a
+          narrow form with a wide empty margin beside it. */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] gap-5 items-start">
+      <div className="flex flex-col gap-5">
 
       {/* Identity */}
       <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-5 flex flex-col gap-4">
@@ -1602,7 +1753,9 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
             <input value={form.sy} onChange={e=>set("sy",e.target.value)} style={inp} className={cls} />
           </Field>
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        {/* Age follows the same 4-column rhythm as the row above, so the computed
+            fields sit under the dates instead of stretching across the form. */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Field t={t} label="Age — Years (auto)">
             <input readOnly value={form.ageYears} placeholder="—" style={{ ...inpMono, opacity:form.ageYears?1:0.4, color:t.accent, cursor:"default" }} className={cls} />
           </Field>
@@ -1647,13 +1800,20 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
             </div>
           </Field>
         </div>
+        {autoHint && (!form.bmiStatus || !form.hfaStatus) && (
+          <p className="text-[10px] -mt-1" style={{ color:t.warning, lineHeight:1.5 }}>{autoHint}</p>
+        )}
       </div>
+
+      </div>
+
+      <div className="flex flex-col gap-5">
 
       {/* Classification */}
       <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-5 flex flex-col gap-4">
         <div className="text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>Beneficiary Classification</div>
         <p className="text-[10px] -mt-2" style={{ color:t.faint }}>Kinder &amp; Grade 1 = Primary · Grades 2–12: Primary = Severely Wasted · Secondary = Severely Stunted · auto, editable</p>
-        <div className="flex gap-2">
+        <div className="flex gap-2" style={{ maxWidth: 420 }}>
           {(["Primary","Secondary"] as const).map(c => (
             <button key={c} onClick={() => set("classificationOfBeneficiary",c)} className="flex-1 py-2 text-sm rounded-sm cursor-pointer border transition-colors"
               style={form.classificationOfBeneficiary===c ? { background:t.accentBg, color:t.accent, borderColor:t.accent+"40" } : { background:t.surface2, color:t.dim, borderColor:t.border }}>
@@ -1679,6 +1839,8 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
           ))}
         </div>
       </div>
+      </div>
+      </div>
 
       <div className="flex gap-3 items-center flex-wrap">
         <button onClick={handleSave} className="px-6 py-2.5 text-sm font-semibold rounded-sm cursor-pointer transition-colors"
@@ -1687,7 +1849,7 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
         </button>
         {editingStudent
           ? <button onClick={handleCancel} className="px-4 py-2.5 text-sm cursor-pointer rounded-sm border transition-colors" style={{ borderColor:t.border, color:t.dim, background:t.surface }}>Cancel</button>
-          : <button onClick={() => { setPeriod(null); setPeriodError(false); setForm(EMPTY_STUDENT(school.id, "")); }} className="px-4 py-2.5 text-sm cursor-pointer rounded-sm border" style={{ borderColor:t.border, color:t.dim }}>Clear</button>}
+          : <button onClick={() => { setPeriod(null); setPeriodError(false); resetManualStatus(); setForm(EMPTY_STUDENT(school.id, "")); }} className="px-4 py-2.5 text-sm cursor-pointer rounded-sm border" style={{ borderColor:t.border, color:t.dim }}>Clear</button>}
         <button onClick={() => setView("records")} className="text-xs ml-auto cursor-pointer" style={{ color:t.dim }}>View all records →</button>
       </div>
     </div>
@@ -1703,6 +1865,8 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }: {
   const [period, setPeriod] = useState<Period|"All">("All");
   const [exporting, setExporting] = useState(false);
   const [search, setSearch] = useState("");
+  /** The learner whose ✕ was clicked — nothing is removed until this is confirmed. */
+  const [pendingDelete, setPendingDelete] = useState<Student | null>(null);
 
   const uniqueStudentCount = useMemo(() => uniqueCount(students), [students]);
 
@@ -1767,6 +1931,9 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }: {
           </button>
         ))}
       </div>
+      <p className="text-[10px] md:hidden -mb-2" style={{ color: t.dim }}>
+        Swipe the table sideways to see every column →
+      </p>
       <div style={{ border: `1px solid ${t.border}`, background: t.surface }} className="overflow-x-auto">
         <table className="w-full text-[10px] min-w-[1480px] border-collapse">
           <thead>
@@ -1834,8 +2001,21 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }: {
                   <td className="px-2 py-2" style={{ whiteSpace: "nowrap" }}>
                     <div className="flex items-center gap-2 justify-center">
                       {s.period ? <Pill label={s.period} color={t.period[s.period]} /> : null}
-                      <button onClick={() => { onEdit(s); setView("entry"); }} className="text-[10px] opacity-0 group-hover:opacity-100" style={{ color: t.dim }}>Edit</button>
-                      <button onClick={() => del(s.id)} className="text-[10px] opacity-0 group-hover:opacity-100" style={{ color: t.danger }}>✕</button>
+                      {/* Row actions: hover / keyboard focus reveals them, touch keeps them. */}
+                      <span className="row-actions flex items-center gap-1.5">
+                        <button aria-label={`Edit ${s.name || "this learner"}'s record`}
+                          onClick={() => { onEdit(s); setView("entry"); }}
+                          className="text-[11px] px-2.5 py-1 rounded-sm cursor-pointer border transition-colors"
+                          style={{ background:t.surface2, color:t.sub, borderColor:t.border }}
+                          onMouseEnter={e=>{ e.currentTarget.style.color=t.text; e.currentTarget.style.borderColor=t.dim; }}
+                          onMouseLeave={e=>{ e.currentTarget.style.color=t.sub; e.currentTarget.style.borderColor=t.border; }}>Edit</button>
+                        <button aria-label={`Delete ${s.name || "this learner"}'s record`}
+                          onClick={() => setPendingDelete(s)}
+                          className="text-[11px] px-2.5 py-1 rounded-sm cursor-pointer border transition-colors"
+                          style={{ background:"transparent", color:t.danger, borderColor:t.danger+"55" }}
+                          onMouseEnter={e=>{ e.currentTarget.style.background=t.danger; e.currentTarget.style.color=t.isDark ? "#100505" : "#ffffff"; }}
+                          onMouseLeave={e=>{ e.currentTarget.style.background="transparent"; e.currentTarget.style.color=t.danger; }}>Delete</button>
+                      </span>
                     </div>
                   </td>
                 </tr>
@@ -1847,6 +2027,29 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }: {
           </tbody>
         </table>
       </div>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={`Delete ${pendingDelete?.name || "this learner"}'s record?`}
+        confirmLabel="Delete record"
+        cancelLabel="Keep record"
+        palette={confirmPalette(t)}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          if (pendingDelete) del(pendingDelete.id);
+          setPendingDelete(null);
+        }}
+      >
+        <strong style={{ color: t.text }}>
+          {pendingDelete?.name || "This learner"}
+          {pendingDelete?.gradeLevel ? ` · ${pendingDelete.gradeLevel}` : ""}
+          {pendingDelete?.period ? ` · ${pendingDelete.period}` : ""}
+        </strong>
+        <br />
+        The measurements, nutritional status and beneficiary details on this record are deleted from {" "}
+        {school.name}'s student records — and, for a record the school encoded from the Teacher Portal, from the
+        division's records server as well. <strong style={{ color: t.text }}>This cannot be undone.</strong>
+      </ConfirmDialog>
     </div>
   );
 }
@@ -1986,6 +2189,9 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
         </div>
       </div>
 
+      <p className="text-[10px] md:hidden -mb-2" style={{ color: t.dim }}>
+        Swipe the table sideways to see every column →
+      </p>
       <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="overflow-x-auto">
         <table className="text-xs min-w-[860px] w-full border-collapse">
           <thead>
@@ -2184,36 +2390,167 @@ export default function App() {
   const [feedbacks, setFeedbacks] = useState<SchoolFeedback[]>(FEEDBACK_SEED);
   const [editingStudent, setEditingStudent] = useState<Student|null>(null);
 
+  // ── The teacher website's side of the loop ──────────────────────────────────
+  // Which Division Office account is signed in, and the school rows the server
+  // handed it. The console is only rendered once an admin session is resolved
+  // (see `src/routes/index.tsx`), so this is the division-wide view.
+  const access = useAccess();
+  const teacherData = access.store;
+
+  // A teacher's profile IS her school's SBFP form header, so what she saves on
+  // `/teacher` is folded into the district's school list here.
+  useEffect(() => {
+    const profiles = teacherData.profiles;
+    if (Object.keys(profiles).length === 0) return;
+    setSchools(prev => prev.map(s => {
+      const p = profiles[s.id];
+      if (!p) return s;
+      const next: School = {
+        ...s,
+        division: p.division,
+        cityMunicipalityBarangay: p.cityMunicipalityBarangay,
+        schoolIdNumber: p.schoolIdNumber,
+        principal: p.principal,
+        focalPerson: p.focalPerson,
+        dateStartFeeding: p.dateStartFeeding,
+        lastMileSchool: p.lastMileSchool,
+      };
+      return SCHOOL_HEADER_KEYS.every(key => next[key] === s[key]) ? s : next;
+    }));
+  }, [teacherData.profiles]);
+
+  const teacherRecords = teacherData.records;
+  const teacherFeedbacks = teacherData.feedbacks;
+
+  /**
+   * School-list writes. A school that a teacher has registered keeps its form
+   * header on `/teacher`, so when the district edits those fields they are
+   * written through to her profile too — otherwise the next profile sync would
+   * put her values back and silently undo the district's edit.
+   */
+  const saveSchools = (next: School[]) => {
+    for (const school of next) {
+      const profile = teacherData.profiles[school.id];
+      if (!profile || !SCHOOL_HEADER_KEYS.some(key => school[key] !== profile[key])) continue;
+      saveProfile(school.id, {
+        division: school.division,
+        cityMunicipalityBarangay: school.cityMunicipalityBarangay,
+        schoolIdNumber: school.schoolIdNumber,
+        principal: school.principal,
+        focalPerson: school.focalPerson,
+        dateStartFeeding: school.dateStartFeeding,
+        lastMileSchool: school.lastMileSchool,
+      });
+    }
+    setSchools(next);
+  };
+
+  /** The district's own rows plus everything the schools encoded on `/teacher`. */
+  const allStudents = useMemo(() => {
+    const seen = new Set(students.map(s => s.id));
+    return [...students, ...teacherRecords.filter(r => !seen.has(r.id))];
+  }, [students, teacherRecords]);
+
+  const allFeedbacks = useMemo(() => {
+    const seen = new Set(feedbacks.map(f => f.id));
+    return [...feedbacks, ...teacherFeedbacks.filter(f => !seen.has(f.id))];
+  }, [feedbacks, teacherFeedbacks]);
+
+  /**
+   * Writes go to whichever side owns the row: learner records and feedback
+   * entered on the teacher website live in the shared store (that is how the
+   * school sees the district's edit and the district's reply), everything else
+   * stays in this component's state.
+   */
+  const saveStudents = (next: Student[]) => {
+    const byId = new Map(next.map(s => [s.id, s]));
+    for (const owned of teacherRecords) {
+      const edited = byId.get(owned.id);
+      if (!edited) removeRecord(owned.id);
+      else if (edited !== owned) updateRecord(owned.id, edited);
+    }
+    const ownedIds = new Set(teacherRecords.map(r => r.id));
+    setStudents(next.filter(s => !ownedIds.has(s.id)));
+  };
+
+  const saveFeedbacks = (next: SchoolFeedback[]) => {
+    const byId = new Map(next.map(f => [f.id, f]));
+    for (const owned of teacherFeedbacks) {
+      const edited = byId.get(owned.id);
+      if (edited && (edited.status !== owned.status || edited.response !== owned.response)) {
+        updateTeacherFeedback(owned.id, { status: edited.status, response: edited.response });
+      }
+    }
+    const ownedIds = new Set(teacherFeedbacks.map(f => f.id));
+    setFeedbacks(next.filter(f => !ownedIds.has(f.id)));
+  };
+
   const schoolStudents = useMemo(
-    () => selectedSchool ? students.filter(s=>s.schoolId===selectedSchool.id) : students,
-    [students, selectedSchool]
+    () => selectedSchool ? allStudents.filter(s=>s.schoolId===selectedSchool.id) : allStudents,
+    [allStudents, selectedSchool]
   );
 
-  const handleSelectSchool = (school: School) => { setSelectedSchool(school); setView("dashboard"); };
+  /** Narrow-screen navigation drawer — closed by default, and by any choice in it. */
+  const [navOpen, setNavOpen] = useState(false);
+
+  // Escape closes the drawer, the same way it closes the delete dialog.
+  useEffect(() => {
+    if (!navOpen) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setNavOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navOpen]);
+
+  const handleSelectSchool = (school: School) => { setSelectedSchool(school); setView("dashboard"); setNavOpen(false); };
   const handleEdit = (student: Student) => { setEditingStudent(student); setView("entry"); };
   const clearEditing = () => setEditingStudent(null);
 
   return (
     <ThemeCtx.Provider value={t}>
-      <div className="flex h-screen min-h-0" style={{ background:t.bg, color:t.text, fontFamily:"'Outfit',sans-serif" }}>
+      <div className="flex min-h-0" style={{ height:"100dvh", background:t.bg, color:t.text, fontFamily:"'Outfit',sans-serif" }}>
+        {navOpen && (
+          <div aria-hidden="true" onClick={() => setNavOpen(false)}
+            className="fixed inset-0 z-30 md:hidden" style={{ background:"rgba(0,0,0,0.5)" }} />
+        )}
         <Sidebar view={view} setView={setView} selectedSchool={selectedSchool} setSelectedSchool={setSelectedSchool}
-          themeMode={themeMode} toggleTheme={() => setThemeMode(m=>m==="dark"?"light":"dark")} schools={schools} />
-        <main className="flex-1 overflow-y-auto p-8">
-          {view==="district" && <DistrictDashboard students={students} schools={schools}
-            feedbacks={feedbacks} onOpenFeedbacks={()=>setView("feedback")} />}
-          {view==="feedback" && <Feedbacks feedbacks={feedbacks} setFeedbacks={setFeedbacks}
+          themeMode={themeMode} toggleTheme={() => setThemeMode(m=>m==="dark"?"light":"dark")} schools={schools}
+          registeredSchools={Object.keys(teacherData.profiles).length}
+          mobileOpen={navOpen} onNavigate={() => setNavOpen(false)} />
+        <div className="flex-1 min-w-0 flex flex-col min-h-0">
+          {/* The sidebar is off-canvas below md, so the console keeps a way in. */}
+          <header className="app-topbar md:hidden flex items-center gap-3 px-4 py-3 flex-shrink-0"
+            style={{ borderBottom:`1px solid ${t.border}`, background:t.surface }}>
+            <button aria-label="Open navigation" aria-expanded={navOpen} onClick={() => setNavOpen(true)}
+              className="min-h-10 min-w-10 px-2.5 py-1.5 rounded-sm cursor-pointer border text-sm"
+              style={{ borderColor:t.border, color:t.text, background:t.surface2 }}>☰</button>
+            <img src="/school-health-wheel.svg" alt="" width={28} height={28} />
+            <div className="min-w-0">
+              <div className="text-[12.5px] font-semibold truncate" style={{ color:t.text }}>Health Monitor</div>
+              <div className="text-[10px] truncate" style={{ color:t.dim }}>{selectedSchool?.name ?? "Urdaneta City Schools"}</div>
+            </div>
+            <div className="ml-auto flex-shrink-0"><UserButton compact /></div>
+          </header>
+        <main className="flex-1 min-h-0 overflow-y-auto p-4 md:p-8">
+          {view==="district" && <DistrictDashboard students={allStudents} schools={schools}
+            feedbacks={allFeedbacks} onOpenFeedbacks={()=>setView("feedback")} />}
+          {view==="feedback" && <Feedbacks feedbacks={allFeedbacks} setFeedbacks={saveFeedbacks}
             schools={schools} defaultSchool={selectedSchool} />}
-          {view==="schools" && <SchoolsList students={students} schools={schools} setSchools={setSchools}
-            setStudents={setStudents} onSelect={handleSelectSchool} />}
+          {view==="schools" && <SchoolsList students={allStudents} schools={schools} setSchools={saveSchools}
+            setStudents={saveStudents} onSelect={handleSelectSchool} />}
+          {view==="accounts" && <AccountsPanel theme={t} schools={schools} accounts={teacherData.accounts}
+            onChanged={() => access.reload()} />}
           {view==="dashboard" && selectedSchool && <Dashboard students={schoolStudents} school={selectedSchool} />}
           {view==="records" && selectedSchool && <StudentRecords students={schoolStudents}
-            setStudents={ss => setStudents([...students.filter(s=>s.schoolId!==selectedSchool.id),...ss])}
+            setStudents={ss => saveStudents([...allStudents.filter(s=>s.schoolId!==selectedSchool.id),...ss])}
             school={selectedSchool} setView={setView} onEdit={handleEdit} />}
-          {view==="entry" && selectedSchool && <DataEntry students={students} setStudents={setStudents}
+          {view==="entry" && selectedSchool && <DataEntry students={allStudents} setStudents={saveStudents}
             school={selectedSchool} setView={setView} editingStudent={editingStudent} clearEditing={clearEditing} />}
           {view==="table" && selectedSchool && <SummaryTable students={schoolStudents} school={selectedSchool} />}
           {view==="analytics" && selectedSchool && <Analytics students={schoolStudents} school={selectedSchool} />}
         </main>
+        </div>
       </div>
     </ThemeCtx.Provider>
   );
