@@ -150,7 +150,7 @@ export const fetchWorkspace = createServerFn({ method: "GET" })
  * sign-in is seeded: the door asks this question on every visit, and an empty
  * database at that moment means the preview has just started. `ensureDemoAdmin`
  * is idempotent and refuses to touch a database that already has an account, so
- * the write happens at most once. On a deployed database (`dbSource` "neon") it
+ * the write happens at most once. On a real Postgres (`dbSource` "postgres") it
  * is a no-op and the first-run card stays the only way in.
  */
 export const fetchBootstrapState = createServerFn({ method: "GET" }).handler(

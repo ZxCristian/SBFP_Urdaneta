@@ -17,11 +17,13 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "./migration-plan.mjs";
+import { databaseUrlFromEnv, pgPoolOptions } from "./pg-connection.mjs";
 
-const databaseUrl = process.env.DATABASE_URL;
+// `SUPABASE_DB_URL` wins over a platform-provisioned `DATABASE_URL`.
+const databaseUrl = databaseUrlFromEnv(process.env);
 if (!databaseUrl) {
   console.log(
-    "[migrate] DATABASE_URL not set — skipping (the PGLite fallback migrates itself).",
+    "[migrate] no database URL (SUPABASE_DB_URL / DATABASE_URL) — skipping (the PGLite fallback migrates itself).",
   );
   process.exit(0);
 }
@@ -42,7 +44,9 @@ async function main() {
     return;
   }
 
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 1 });
+  // One connection: the migrator is sequential, and Supabase's pooler has a
+  // shared connection budget. `pgPoolOptions` also adds the TLS Supabase needs.
+  const pool = new pg.Pool(pgPoolOptions(databaseUrl, { max: 1 }));
   const client = await pool.connect();
   try {
     await client.query(
