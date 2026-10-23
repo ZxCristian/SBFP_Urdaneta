@@ -346,7 +346,7 @@ export function classifyHFA(height: string, ageYears: string, sex: string): HFAS
   return "Tall";
 }
 
-// ── Seed Data ──────────────────────────────────────────────────────────────────
+// ── Learner records ────────────────────────────────────────────────────────────
 export const EMPTY_STUDENT = (schoolId: string, period: Period|"" = ""): Omit<Student,"id"> => ({
   schoolId, period: (period || "") as Period, sy:"2025-2026", name:"", sex:"", gradeLevel: "",
   dateOfBirth:"", dateOfWeighing:"", ageYears:"", ageMonths:"",
@@ -354,219 +354,9 @@ export const EMPTY_STUDENT = (schoolId: string, period: Period|"" = ""): Omit<St
   nutritionalStatus:"", classificationOfBeneficiary:"",
   pregnant:"", hasYoungChildren:"", dewormed:"", parentConsentMilk:"", fourPs:"", sbfpPreviousYears:"",
 });
-const FIRST_NAMES_M = ["Juan","Pedro","Miguel","Jose","Carlos","Antonio","Rafael","Luis","Gabriel","Andres","Mark","John","Daniel","James","Joshua","Alden","Coco","Xian","Enrique","Matteo","Diego","Paolo","Nico","Marco","Lorenzo","Francis","Christian","Ryan","Kevin","Jared"];
-const FIRST_NAMES_F = ["Maria","Ana","Sofia","Liza","Chloe","Bea","Nadine","Kathryn","Angel","Marian","Julia","Anne","Kim","Maine","Sarah","Isabella","Camila","Elena","Andrea","Patricia","Angela","Christine","Nicole","Bianca","Katrina","Jasmine","Michelle","Amanda","Rosa","Carmen"];
-const LAST_NAMES = ["Santos","dela Cruz","Reyes","Bautista","Garcia","Cruz","Mendoza","Gonzales","Villanueva","Perez","Alonzo","Padilla","Lustre","Reid","Bernardo","Gil","Locsin","Dantes","Rivera","Martin","Barretto","Garcia","Curtis","Navarro","Chiu","Lim","Mendoza","Richards","Geronimo","Guidicelli","Torres","Ramos","Flores","Castillo","Aquino","Lopez","Diaz","Hernandez","Morales","Santiago"];
 
-function seededRandom(seed: number) {
-  let s = seed;
-  return () => {
-    s = (s * 16807 + 0) % 2147483647;
-    return (s - 1) / 2147483646;
-  };
-}
 
-function pick<T>(arr: T[], rnd: () => number): T {
-  return arr[Math.floor(rnd() * arr.length)];
-}
-
-function generateSeed(schools: School[]): Student[] {
-  const students: Student[] = [];
-  let idCounter = 1;
-  const yesNo = (rnd: () => number, pYes = 0.7): YesNo => (rnd() < pYes ? "Yes" : "No");
-
-  // Weighing dates per period (same school year)
-  const weighingDates: Record<Period, string> = {
-    Baseline: "2025-09-15",
-    Midline: "2026-01-20",
-    Endline: "2026-05-15",
-  };
-
-  for (const school of schools) {
-    const grades = getGrades(school);
-    const isHS = school.type === "High School";
-    // 50–60 unique students per school (each appears in all 3 periods → 150–180 records)
-    const cohortSize = 50 + Math.floor(seededRandom(school.id.charCodeAt(0) + school.id.charCodeAt(2))() * 11);
-    const rnd = seededRandom(school.id.split("").reduce((a, c) => a + c.charCodeAt(0), 0));
-
-    for (let i = 0; i < cohortSize; i++) {
-      const sex: Sex = rnd() < 0.5 ? "M" : "F";
-      const grade = grades[Math.floor(rnd() * grades.length)];
-      const first = sex === "M" ? pick(FIRST_NAMES_M, rnd) : pick(FIRST_NAMES_F, rnd);
-      const last = pick(LAST_NAMES, rnd);
-      const name = `${first} ${last}`;
-
-      // Age roughly matching grade (at Baseline); SPED maps to same ages as regular grades
-      const gradeForAge = grade.replace(/^SPED /, "");
-      const baseAge = isHS
-        ? (gradeForAge === "Grade 7" ? 12 : gradeForAge === "Grade 8" ? 13 : gradeForAge === "Grade 9" ? 14 : gradeForAge === "Grade 10" ? 15 : gradeForAge === "Grade 11" ? 16 : 17)
-        : (gradeForAge === "Kinder" ? 5 : gradeForAge === "Grade 1" ? 6 : gradeForAge === "Grade 2" ? 7 : gradeForAge === "Grade 3" ? 8 : gradeForAge === "Grade 4" ? 9 : gradeForAge === "Grade 5" ? 10 : gradeForAge === "Grade 6" ? 11 : 8);
-      const ageYearsBase = Math.max(5, Math.min(18, baseAge + Math.floor(rnd() * 3) - 1));
-      const ageMonthsBase = Math.floor(rnd() * 12);
-
-      const dobYear = 2025 - ageYearsBase - (ageMonthsBase > 8 ? 1 : 0);
-      const dobMonth = String(Math.floor(rnd() * 12) + 1).padStart(2, "0");
-      const dobDay = String(Math.floor(rnd() * 28) + 1).padStart(2, "0");
-      const dateOfBirth = `${dobYear}-${dobMonth}-${dobDay}`;
-
-      const pregnant: YesNo = sex === "F" && ageYearsBase >= 15 && rnd() < 0.05 ? "Yes" : "No";
-      const hasYoungChildren: YesNo = sex === "F" && ageYearsBase >= 16 && rnd() < 0.08 ? "Yes" : "No";
-      const dewormed = yesNo(rnd, 0.82);
-      const parentConsentMilk = yesNo(rnd, 0.88);
-      const fourPs = yesNo(rnd, 0.55);
-      const sbfpPreviousYears = yesNo(rnd, 0.48);
-
-      // Baseline z-scores
-      // Grade 2–6: only Severely Wasted and/or Severely Stunted (program focus)
-      const isGrade2to6 = ["Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "SPED Grade 2", "SPED Grade 3", "SPED Grade 4", "SPED Grade 5", "SPED Grade 6"].includes(grade);
-      let zBmi: number;
-      let zHfa: number;
-      if (isGrade2to6) {
-        // Force severe undernutrition: Severely Wasted, Severely Stunted, or both
-        const mode = rnd();
-        if (mode < 0.4) {
-          // Severely Wasted only
-          zBmi = -3.8 + rnd() * 0.75; // z < -3
-          zHfa = -1.5 + rnd() * 2.5;
-        } else if (mode < 0.75) {
-          // Severely Stunted only
-          zBmi = -1.2 + rnd() * 2.0;
-          zHfa = -3.7 + rnd() * 0.65; // z < -3
-        } else {
-          // Both severe
-          zBmi = -3.8 + rnd() * 0.75;
-          zHfa = -3.7 + rnd() * 0.65;
-        }
-      } else {
-        // Other grades: mixed distribution
-        zBmi = rnd() < 0.14 ? -3.1 + rnd() * 0.9 : rnd() < 0.28 ? -2.4 + rnd() * 0.9 : rnd() < 0.72 ? -0.4 + rnd() * 1.4 : 0.7 + rnd() * 1.6;
-        zHfa = rnd() < 0.12 ? -3.0 + rnd() * 0.8 : rnd() < 0.25 ? -2.3 + rnd() * 0.8 : rnd() < 0.85 ? -0.2 + rnd() * 1.5 : 1.1 + rnd() * 1.4;
-      }
-
-      // Trajectory: Grade 2–6 improve slowly (often remain severe); others improve more
-      const bmiImprove = isGrade2to6
-        ? (rnd() < 0.5 ? 0.08 + rnd() * 0.2 : 0)
-        : (rnd() < 0.65 ? 0.25 + rnd() * 0.55 : rnd() < 0.85 ? 0 : -(0.1 + rnd() * 0.3));
-      const hfaImprove = isGrade2to6
-        ? (rnd() < 0.45 ? 0.05 + rnd() * 0.15 : 0)
-        : (rnd() < 0.55 ? 0.15 + rnd() * 0.4 : rnd() < 0.8 ? 0 : -(0.05 + rnd() * 0.2));
-
-      PERIODS.forEach((period, pIdx) => {
-        // Age increases slightly across periods within the same SY
-        const ageYears = Math.min(19, ageYearsBase + (pIdx === 2 ? 1 : 0));
-        const ageMonths = pIdx === 0 ? ageMonthsBase : pIdx === 1 ? Math.min(11, ageMonthsBase + 4) : Math.min(11, ageMonthsBase + 8);
-
-        const zB = zBmi + bmiImprove * pIdx;
-        const zH = zHfa + hfaImprove * pIdx;
-        const [medBmi, sdBmi] = (sex === "M" ? WHO_BMI_M : WHO_BMI_F)[Math.min(ageYears - 5, 14)] || [16, 2];
-        const [medHfa, sdHfa] = (sex === "M" ? WHO_HFA_M : WHO_HFA_F)[Math.min(ageYears - 5, 14)] || [130, 6];
-        const bmiVal = medBmi + zB * sdBmi;
-        const heightVal = medHfa + zH * sdHfa;
-        const weightVal = bmiVal * (heightVal / 100) ** 2;
-
-        const bmi = Math.max(10, bmiVal).toFixed(2);
-        const height = Math.max(90, heightVal).toFixed(1);
-        const weight = Math.max(12, weightVal).toFixed(1);
-        const bmiStatus = classifyBMI(bmi, String(ageYears), sex) || "Normal";
-        const hfaStatus = classifyHFA(height, String(ageYears), sex) || "Normal";
-        const nutritionalStatus = bmiStatus === "Normal"
-          ? (hfaStatus.includes("Stunted") ? hfaStatus : "Normal")
-          : bmiStatus;
-        // Primary = Severely Wasted, Secondary = Severely Stunted (Grades 2–12)
-        const classificationOfBeneficiary = classifyBeneficiary(grade, bmiStatus, hfaStatus);
-
-        students.push({
-          id: `s${String(idCounter++).padStart(5, "0")}`,
-          schoolId: school.id,
-          period,
-          sy: "2025-2026",
-          name,
-          sex,
-          gradeLevel: grade,
-          dateOfBirth,
-          dateOfWeighing: weighingDates[period],
-          ageYears: String(ageYears),
-          ageMonths: String(ageMonths),
-          weight,
-          height,
-          bmi,
-          bmiStatus,
-          hfaStatus,
-          nutritionalStatus,
-          classificationOfBeneficiary,
-          pregnant,
-          hasYoungChildren,
-          dewormed,
-          parentConsentMilk,
-          fourPs,
-          sbfpPreviousYears,
-        });
-      });
-    }
-  }
-  return students;
-}
-
-const SEED: Student[] = generateSeed([...INIT_ES, ...INIT_HS]);
-
-// ── Feedbacks sent up by the schools ──────────────────────────────────────────
-// Seeded with one voice per school so the district page opens with a real
-// cross-section of the field instead of an empty list.
-const schoolIdOf = (name: string) =>
-  INIT_ES.find(s => s.name === name)?.id ?? INIT_HS.find(s => s.name === name)?.id ?? "";
-
-type FeedbackSeed = Omit<SchoolFeedback, "id"|"schoolId"> & { school: string };
-
-const FEEDBACK_ROWS: FeedbackSeed[] = [
-  { school:"Urdaneta 1 Central School", author:"Josefa Ramos", role:"SBFP Focal", category:"Feeding Implementation", rating:5, createdAt:"2026-07-08", status:"Resolved",
-    message:"Feeding started on July 6 as scheduled. 118 of our 124 target learners were present on Day 1; the six absentees were followed up by their advisers the same week.",
-    response:"Noted and appreciated. Please keep the daily attendance sheet for the midyear validation." },
-  { school:"Badipa Elementary School", author:"Aileen Marie Dela Cruz", role:"Feeding Coordinator", category:"Supplies & Logistics", rating:3, createdAt:"2026-07-17", status:"Resolved",
-    message:"We received 30 kilos of rice but only 24 litres of milk for the first cycle. Grades 1 and 2 are short for the last two weeks of the cycle.",
-    response:"Validated with the division supply unit; the balance of 12 litres goes out with the next batch." },
-  { school:"Catablan Integrated School", author:"Rolando Bautista", role:"School Head", category:"Supplies & Logistics", rating:2, createdAt:"2026-07-23", status:"Resolved",
-    message:"The weighing scale assigned to Grade 3 gives inconsistent readings — three learners weighed twice differed by as much as 1.5 kilos. Requesting a replacement or calibration.",
-    response:"Two replacement scales from division stock were released on July 28. Please re-weigh the affected learners and update the baseline." },
-  { school:"Anonas Elementary School", author:"Marilou Aquino", role:"School Nurse", category:"Nutrition Data", rating:4, createdAt:"2026-08-04", status:"Acknowledged",
-    message:"Baseline BMI and HFA for Kinder to Grade 6 are complete and encoded. Grade 6 Endline is still pending — we weigh after the final feeding day on October 20.",
-    response:"Received. Kindly submit the Endline records within three days of the final weighing day." },
-  { school:"Palina East Elementary School", author:"Elmer Soriano", role:"SBFP Focal", category:"Learner Concerns", rating:5, createdAt:"2026-08-12", status:"Resolved",
-    message:"Six learners flagged Wasted at baseline moved to Normal at the midline. Their parents are asking whether the milk component can continue until the end of the school year." },
-  { school:"Cayambanan Elementary School", author:"Girlie Punzalan", role:"Grade 6 Adviser", category:"System / Forms", rating:4, createdAt:"2026-08-20", status:"Acknowledged",
-    message:"The Form 2 export now comes out the same as the printed template, thank you. Requesting the same auto-total for the last column of Form 1A if possible." },
-  { school:"Don A. Maiquez Memorial Elementary School", author:"Norberto Villamor", role:"School Head", category:"Feeding Implementation", rating:4, createdAt:"2026-08-27", status:"Resolved",
-    message:"We feed 96 learners in two shifts because the canteen only seats 50 at a time. Sessions run at 7:00 and 9:30 AM so no class time is lost." },
-  { school:"Urdaneta City National High School", author:"Rosalie Andrada", role:"Feeding Coordinator", category:"Nutrition Data", rating:3, createdAt:"2026-09-02", status:"Acknowledged",
-    message:"Twelve Grade 7 learners have no height on record for the baseline — their Form 1A entries were submitted with the height column blank.",
-    response:"Please re-measure and re-upload. That is why the Form 2 HEIGHT columns read zero for Grade 7." },
-  { school:"Sta. Lucia Elementary School", author:"Teodoro Espino", role:"SBFP Focal", category:"Learner Concerns", rating:3, createdAt:"2026-09-08", status:"Acknowledged",
-    message:"Two learners with Severe Wasting were referred to the Rural Health Unit for check-up. We are holding them on the regular menu until the results come back.",
-    response:"Log the referral with the school nurse; a modified menu can be requested through the SDO if the RHU advises it." },
-  { school:"Camantiles National High School", author:"Bernadette Lagasca", role:"School Nurse", category:"Feeding Implementation", rating:5, createdAt:"2026-09-11", status:"Resolved",
-    message:"All 84 target learners finished the deworming on schedule and the feeding line runs in 15 minutes with parent volunteers helping." },
-  { school:"Tulong Integrated School", author:"Armando Ferrer", role:"School Head", category:"Supplies & Logistics", rating:4, createdAt:"2026-09-15", status:"New",
-    message:"Requesting additional milk for three transferee learners who were added after the master list was finalized last August." },
-  { school:"San Jose Elementary School", author:"Jennifer Manaois", role:"SBFP Focal", category:"Feeding Implementation", rating:5, createdAt:"2026-09-18", status:"Acknowledged",
-    message:"Midline feeding completed. Attendance in the feeding area is at 98% over the last four weeks." },
-  { school:"Manan Elementary School", author:"Crisanto Bacani", role:"Grade 3 Adviser", category:"Other", rating:4, createdAt:"2026-09-22", status:"New",
-    message:"Our washing station has no roof. Requesting help with a tarpaulin or a small repair before the rainy months." },
-  { school:"Nancayasan Elementary School", author:"Lorna Dizon", role:"SBFP Focal", category:"Nutrition Data", rating:3, createdAt:"2026-09-24", status:"Acknowledged",
-    message:"We re-weighed the 14 learners whose baseline came out Overweight: ten are now Normal, four are still Overweight and will be monitored monthly." },
-  { school:"DAPSMECS Main", author:"Fidel Agustin", role:"School Head", category:"System / Forms", rating:3, createdAt:"2026-09-29", status:"New",
-    message:"We cannot find where to record learners who transfer in the middle of the feeding cycle. They appear in the master list but not in Form 2." },
-  { school:"Vicente Taaca Memorial School", author:"Michelle Bautista", role:"Feeding Coordinator", category:"Feeding Implementation", rating:4, createdAt:"2026-10-02", status:"Acknowledged",
-    message:"Kinder and Grade 1 are fed before recess so the learners eat inside the feeding area. Endline weighing is scheduled for October 19–20." },
-  { school:"Cabaruan Elementary School", author:"Rodelio Marquez", role:"SBFP Focal", category:"Supplies & Logistics", rating:2, createdAt:"2026-10-06", status:"New",
-    message:"Our plates and spoons are only enough for one section at a time, so we borrow from the EPP kitchen. Requesting a set for the second feeding area." },
-  { school:"Anonas National High School", author:"Percival Bautista", role:"School Head", category:"Learner Concerns", rating:4, createdAt:"2026-10-07", status:"New",
-    message:"Two Grade 9 learners flagged Wasted at baseline improved to Normal at the midline. Their parents are requesting a continuation form for next school year." },
-];
-
-const FEEDBACK_SEED: SchoolFeedback[] = FEEDBACK_ROWS
-  .map(({ school, ...f }, i) => ({ ...f, id:`fb${String(i+1).padStart(2,"0")}`, schoolId: schoolIdOf(school) }))
-  .filter(f => f.schoolId);
-
-// ── Feedback helpers ──────────────────────────────────────────────────────────
+// ── Feedback helpers ────────────────────────────────────────────────────────────────
 const MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 /** ISO date → "Oct 02, 2026" */
@@ -825,6 +615,15 @@ function DistrictDashboard({ students, schools, feedbacks, onOpenFeedbacks }: {
         <StatCard label="Elementary Students" value={esCount} t={t} />
         <StatCard label="High School Students" value={hsCount} t={t} />
       </div>
+
+      {students.length === 0 && (
+        <div style={{ border:`1px dashed ${t.border}`, background:t.surface }} className="p-5">
+          <p className="text-sm" style={{ color:t.sub }}>No learner records yet.</p>
+          <p className="text-xs mt-1" style={{ color:t.dim }}>
+            Schools encode their learners in the Teacher Portal. The totals and the BMI, HFA and period charts fill in as those records arrive.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-px" style={{ background:t.border }}>
         <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-5">
@@ -1121,8 +920,17 @@ function Feedbacks({ feedbacks, setFeedbacks, schools, defaultSchool }: {
       <div className="flex flex-col gap-3">
         {filtered.length === 0 && (
           <div style={{ border:`1px dashed ${t.border}`, background:t.surface }} className="p-8 text-center">
-            <p className="text-sm" style={{ color:t.sub }}>No feedback matches these filters.</p>
-            <p className="text-xs mt-1" style={{ color:t.dim }}>Try another status, category or school type.</p>
+            {feedbacks.length === 0 ? (
+              <>
+                <p className="text-sm" style={{ color:t.sub }}>No feedback yet.</p>
+                <p className="text-xs mt-1" style={{ color:t.dim }}>Schools send feedback from the Teacher Portal, or record one here with ＋ Record Feedback.</p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm" style={{ color:t.sub }}>No feedback matches these filters.</p>
+                <p className="text-xs mt-1" style={{ color:t.dim }}>Try another status, category or school type.</p>
+              </>
+            )}
           </div>
         )}
         {filtered.map(f => {
@@ -1517,6 +1325,15 @@ function Dashboard({ students, school }: { students:Student[]; school:School }) 
         <StatCard label="SBFP Prev. Years" value={f.filter(s=>s.sbfpPreviousYears==="Yes").length} t={t} />
         <StatCard label="Dewormed" value={f.filter(s=>s.dewormed==="Yes").length} t={t} />
       </div>
+
+      {students.length === 0 && (
+        <div style={{ border:`1px dashed ${t.border}`, background:t.surface }} className="p-5">
+          <p className="text-sm" style={{ color:t.sub }}>No learner records yet.</p>
+          <p className="text-xs mt-1" style={{ color:t.dim }}>
+            Add this school's learners from Student Records, or wait for its teacher to submit them through the Teacher Portal.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-px" style={{ background:t.border }}>
         <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-5">
@@ -2385,9 +2202,9 @@ export default function App() {
   const t = themeMode === "dark" ? DARK : LIGHT;
   const [view, setView] = useState<View>("district");
   const [selectedSchool, setSelectedSchool] = useState<School|null>(null);
-  const [students, setStudents] = useState<Student[]>(SEED);
+  const [students, setStudents] = useState<Student[]>([]);
   const [schools, setSchools] = useState<School[]>([...INIT_ES, ...INIT_HS]);
-  const [feedbacks, setFeedbacks] = useState<SchoolFeedback[]>(FEEDBACK_SEED);
+  const [feedbacks, setFeedbacks] = useState<SchoolFeedback[]>([]);
   const [editingStudent, setEditingStudent] = useState<Student|null>(null);
 
   // ── The teacher website's side of the loop ──────────────────────────────────
