@@ -28,27 +28,37 @@ import {
   createAccount,
   createPasswordReset,
   credentialState,
+  dataVersion,
   deleteAccount,
   deleteRecord,
-  DEMO_ADMIN_EMAIL,
-  DEMO_ADMIN_PASSWORD,
-  ensureDemoAdmin,
   findAccountByEmail,
+  getArchivedYear,
+  getSchoolProfile,
   hasAdminAccount,
   hashResetToken,
   insertFeedback,
   listAccounts,
   needsCurrentPassword,
+  previousBeneficiaryYear,
   pullData,
   resetPassword,
   resetPasswordWithToken,
   resolveAccess,
+  restoreRecord,
   saveSchoolProfile,
+  saveSummaryExtra,
   updateAccount,
   updateFeedback,
   upsertRecord,
 } from "./sbfp-accounts.ts";
 import type { Sql } from "./db.ts";
+import {
+  getActiveSchoolYear,
+  listSchoolYears,
+  SchoolYearError,
+  startNewSchoolYear,
+} from "./sbfp-years.ts";
+import { deleteSchool, listSchools, updateSchool } from "./sbfp-schools.ts";
 import type { Student } from "@/lib/sbfp-shared";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -77,6 +87,14 @@ let sql: Sql;
 type RecordRow = Omit<Student, "schoolId">;
 
 /** A learner record with everything the school's Data Entry form fills in. */
+/** A birthday that makes the learner exactly `years` old today. */
+function dobForAge(years: number): string {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - years);
+  d.setDate(d.getDate() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function record(id: string, name: string, overrides: Partial<RecordRow> = {}): RecordRow {
   return {
     id,
@@ -126,7 +144,15 @@ async function refusal(run: () => Promise<unknown>): Promise<string> {
 async function emptyDb(): Promise<PGlite> {
   const fresh = new PGlite();
   await fresh.waitReady;
-  for (const file of ["0001_auth.sql", "0002_sbfp.sql", "0003_password_reset.sql"]) {
+  for (const file of [
+    "0001_auth.sql",
+    "0002_sbfp.sql",
+    "0003_password_reset.sql",
+    "0004_school_years.sql",
+    "0005_schools.sql",
+    "0006_remove_demo_admin.sql",
+    "0007_summary_and_trash.sql",
+  ]) {
     await fresh.exec(await readFile(join(ROOT, "migrations", file), "utf8"));
   }
   return fresh;
@@ -135,7 +161,15 @@ async function emptyDb(): Promise<PGlite> {
 before(async () => {
   pg = new PGlite();
   await pg.waitReady;
-  for (const file of ["0001_auth.sql", "0002_sbfp.sql", "0003_password_reset.sql"]) {
+  for (const file of [
+    "0001_auth.sql",
+    "0002_sbfp.sql",
+    "0003_password_reset.sql",
+    "0004_school_years.sql",
+    "0005_schools.sql",
+    "0006_remove_demo_admin.sql",
+    "0007_summary_and_trash.sql",
+  ]) {
     await pg.exec(await readFile(join(ROOT, "migrations", file), "utf8"));
   }
   sql = toSql(pg);
@@ -309,6 +343,47 @@ describe("the Division Office account", () => {
     assert.equal(mine.feedbacks[0].createdAt, "2026-08-01");
     assert.equal(mine.accounts[0].recordCount, 1);
     assert.equal(mine.accounts[0].feedbackCount, 1);
+    // The payload carries the signature the live-update poll compares against.
+    assert.equal(mine.version, await dataVersion(sql, access));
+  });
+
+  it("moves the change signature only for rows the caller may see", async () => {
+    const adminAccess = await resolveAccess(sql, ADMIN);
+    const teacherAccess = await resolveAccess(sql, TEACHER_A);
+    const otherAccess = await resolveAccess(sql, "teacher.b@depedurdaneta.gov.ph");
+    assert.ok(adminAccess && teacherAccess && otherAccess);
+
+    const adminBefore = await dataVersion(sql, adminAccess);
+    const teacherBefore = await dataVersion(sql, teacherAccess);
+    const otherBefore = await dataVersion(sql, otherAccess);
+
+    // School A encodes another learner: both the division and School A must
+    // refresh; School B must not (it cannot see the row).
+    await upsertRecord(sql, SCHOOL_A, record("tr_a2", "Learner A2"), TEACHER_A);
+    assert.notEqual(await dataVersion(sql, adminAccess), adminBefore);
+    assert.notEqual(await dataVersion(sql, teacherAccess), teacherBefore);
+    assert.equal(await dataVersion(sql, otherAccess), otherBefore);
+
+    // An account issued for another school moves the division's signature (its
+    // accounts table changed) but not School B's.
+    const otherBeforeAccount = await dataVersion(sql, otherAccess);
+    const adminBeforeAccount = await dataVersion(sql, adminAccess);
+    await createAccount(sql, {
+      email: "teacher.c@depedurdaneta.gov.ph",
+      password: "sbpf-cccc",
+      role: "teacher",
+      fullName: "Bautista, Lito",
+      schoolId: "es-003",
+    });
+    try {
+      assert.notEqual(await dataVersion(sql, adminAccess), adminBeforeAccount);
+      assert.equal(await dataVersion(sql, otherAccess), otherBeforeAccount);
+    } finally {
+      // Later tests reuse this record count, email and school; leave the fixture
+      // exactly as it was.
+      await sql.query("delete from sbfp_records where id = $1", ["tr_a2"]);
+      await deleteAccount(sql, "teacher.c@depedurdaneta.gov.ph");
+    }
   });
 
   it("cannot be removed or put on hold while it is the only one", async () => {
@@ -384,14 +459,131 @@ describe("a teacher can only reach her own school", () => {
     assert.equal(stored[0].school_id, SCHOOL_B);
   });
 
-  it("keeps deletes inside the school", async () => {
+  it("keeps deletes inside the school and moves them to the trash", async () => {
     await deleteRecord(sql, "tr_b1", SCHOOL_A); // someone else's row → no-op
-    const still = await sql.query<{ id: string }>("select id from sbfp_records where id = $1", ["tr_b1"]);
+    const still = await sql.query<{ id: string; deleted_at: string | null }>(
+      "select id, deleted_at from sbfp_records where id = $1",
+      ["tr_b1"],
+    );
     assert.equal(still.length, 1);
-    await deleteRecord(sql, "tr_a1", SCHOOL_A);
-    const gone = await sql.query<{ id: string }>("select id from sbfp_records where id = $1", ["tr_a1"]);
-    assert.equal(gone.length, 0);
+    assert.equal(still[0].deleted_at, null, "another school's delete changes nothing");
+
+    await deleteRecord(sql, "tr_a1", SCHOOL_A, TEACHER_A);
+    const trashed = await sql.query<{ id: string; deleted_by: string | null; deleted_at: string | null }>(
+      "select id, deleted_by, deleted_at from sbfp_records where id = $1",
+      ["tr_a1"],
+    );
+    assert.equal(trashed.length, 1, "the row is kept for the trash");
+    assert.ok(trashed[0].deleted_at);
+    assert.equal(trashed[0].deleted_by, TEACHER_A);
+
+    await restoreRecord(sql, "tr_a1", SCHOOL_A);
+    const restored = await sql.query<{ deleted_at: string | null }>(
+      "select deleted_at from sbfp_records where id = $1",
+      ["tr_a1"],
+    );
+    assert.equal(restored[0].deleted_at, null);
     await upsertRecord(sql, SCHOOL_A, record("tr_a1", "Learner A"), TEACHER_A);
+  });
+});
+
+describe("learner encoding rules", () => {
+  let rules: PGlite;
+  let db: Sql;
+
+  before(async () => {
+    rules = await emptyDb();
+    db = toSql(rules);
+  });
+
+  after(async () => {
+    await rules.close();
+  });
+
+  it("stores male learners as not pregnant and keeps a female learner's answer", async () => {
+    await upsertRecord(db, SCHOOL_A, record("rule_m", "Male Learner", { sex: "M", ageYears: "12", dateOfBirth: dobForAge(12), pregnant: "Yes" }));
+    await upsertRecord(db, SCHOOL_A, record("rule_10", "Ten Year Old", { sex: "F", ageYears: "10", dateOfBirth: dobForAge(10), pregnant: "Yes" }));
+    await upsertRecord(db, SCHOOL_A, record("rule_11", "Eleven Year Old", { sex: "F", ageYears: "11", dateOfBirth: dobForAge(11), pregnant: "Yes" }));
+
+    const rows = await db.query<{ id: string; pregnant: string }>(
+      "select id, pregnant from sbfp_records where id in ('rule_m','rule_10','rule_11') order by id",
+    );
+    assert.deepEqual(
+      rows.map((row) => [row.id, row.pregnant]),
+      [
+        ["rule_10", "Yes"],
+        ["rule_11", "Yes"],
+        ["rule_m", "No"],
+      ],
+    );
+  });
+});
+
+describe("trash and the Form 2 manual counts", () => {
+  let fresh: PGlite;
+  let db: Sql;
+
+  before(async () => {
+    fresh = await emptyDb();
+    db = toSql(fresh);
+    await claimAdminAccountForEmail(db, ADMIN, "Division SBFP Coordinator");
+  });
+
+  after(async () => {
+    await fresh.close();
+  });
+
+  it("saves the at-risk and IP counts per school, year, period and grade", async () => {
+    await saveSummaryExtra(
+      db,
+      SCHOOL_A,
+      { period: "Baseline", grade: "Grade 3", sex: "F", atRisk: 4, ips: 2 },
+      ADMIN,
+    );
+    await saveSummaryExtra(
+      db,
+      SCHOOL_A,
+      { period: "Baseline", grade: "Grade 3", sex: "M", atRisk: 1, ips: 0 },
+      ADMIN,
+    );
+    const admin = await resolveAccess(db, ADMIN);
+    assert.ok(admin);
+    const workspace = await pullData(db, admin);
+    const saved = workspace.summaryExtras
+      .filter((row) => row.schoolId === SCHOOL_A && row.period === "Baseline")
+      .map((row) => [row.grade, row.sex, row.atRisk, row.ips])
+      .sort();
+    assert.deepEqual(saved, [
+      ["Grade 3", "F", 4, 2],
+      ["Grade 3", "M", 1, 0],
+    ]);
+
+    await assert.rejects(
+      () => saveSummaryExtra(db, SCHOOL_A, { period: "Baseline", grade: "Grade 3", sex: "F", atRisk: -1, ips: 0 }),
+      (err: unknown) => err instanceof AccountError && err.code === "invalid_record",
+    );
+  });
+
+  it("soft-deletes, restores, then permanently empties the trash at the new year", async () => {
+    await upsertRecord(db, SCHOOL_A, record("trash_a1", "Trashed Learner"));
+    await deleteRecord(db, "trash_a1", SCHOOL_A, ADMIN);
+
+    const admin = await resolveAccess(db, ADMIN);
+    assert.ok(admin);
+    let workspace = await pullData(db, admin);
+    assert.equal(workspace.records.some((row) => row.id === "trash_a1"), false);
+    assert.equal(workspace.trash.some((row) => row.id === "trash_a1"), true);
+    assert.equal(workspace.trash.find((row) => row.id === "trash_a1")?.deletedBy, ADMIN);
+
+    await restoreRecord(db, "trash_a1", SCHOOL_A);
+    workspace = await pullData(db, admin);
+    assert.equal(workspace.records.some((row) => row.id === "trash_a1"), true);
+    assert.equal(workspace.trash.some((row) => row.id === "trash_a1"), false);
+
+    await deleteRecord(db, "trash_a1", SCHOOL_A, ADMIN);
+    await startNewSchoolYear(db, "2026-2027");
+    const gone = await db.query<{ id: string }>("select id from sbfp_records where id = $1", ["trash_a1"]);
+    assert.equal(gone.length, 0, "the new school year empties the trash permanently");
   });
 });
 
@@ -641,11 +833,15 @@ describe("school data", () => {
     assert.equal(teacherA.recordCount, 1);
     assert.equal(teacherA.feedbackCount, 1);
     assert.equal(teacherA.email, TEACHER_A);
-    assert.equal(all.filter((a) => a.role === "admin").length, 1, "the second admin was removed again");
+    assert.equal(
+      all.filter((a) => a.role === "admin").length,
+      1,
+      `admins now: ${all.filter((a) => a.role === "admin").map((a) => a.email).join(", ")}`,
+    );
   });
 });
 
-describe("the live preview's Division Office sign-in", () => {
+describe("the Division Office account is never seeded", () => {
   let fresh: PGlite;
   let freshSql: Sql;
 
@@ -658,33 +854,260 @@ describe("the live preview's Division Office sign-in", () => {
     await fresh.close();
   });
 
-  it("never seeds a deployed database", async () => {
-    assert.equal(await ensureDemoAdmin(freshSql, { preview: false }), false);
-    assert.equal(await hasAdminAccount(freshSql), false, "the first-run card stays the only way in");
+  it("starts empty, so the first-run card is the only way in", async () => {
+    // A fixed login would be a password in the source for an account that can
+    // read every school's learners. There is deliberately none, on either
+    // backend: the card asks for a password nobody has read.
+    assert.equal(await hasAdminAccount(freshSql), false);
+    assert.equal(await findAccountByEmail(freshSql, "test@gmail.com"), null);
+    assert.equal((await listAccounts(freshSql)).length, 0);
+  });
+});
+
+describe("the seeded school list", () => {
+  let fresh: PGlite;
+  let freshSql: Sql;
+
+  before(async () => {
+    fresh = await emptyDb();
+    freshSql = toSql(fresh);
   });
 
-  it("seeds the fixed login on a fresh preview, and leaves it alone afterwards", async () => {
-    assert.equal(await ensureDemoAdmin(freshSql, { preview: true }), true);
+  after(async () => {
+    await fresh.close();
+  });
 
-    const account = await findAccountByEmail(freshSql, DEMO_ADMIN_EMAIL);
-    assert.ok(account, `${DEMO_ADMIN_EMAIL} holds the Division Office account`);
-    assert.equal(account.role, "admin");
-    assert.equal(account.status, "active");
-    assert.equal(account.tempPassword, false, "the preview login is not a temporary password");
+  it("holds the division's 45 elementary and 13 high schools", async () => {
+    const schools = await listSchools(freshSql);
+    assert.equal(schools.length, 58);
+    assert.equal(schools.filter((s) => s.type === "Elementary").length, 45);
+    assert.equal(schools.filter((s) => s.type === "High School").length, 13);
+    assert.ok(schools.some((s) => s.name === "Anonas East Elementary School"));
+    assert.ok(schools.some((s) => s.name === "Urdaneta City National High School"));
+  });
 
-    // The whole point: it signs in through the real route, with the real hasher.
-    const credential = await credentialState(freshSql, DEMO_ADMIN_EMAIL);
-    assert.ok(credential?.hasPassword);
-    assert.equal(
-      await verifyPassword({ hash: credential.hash, password: DEMO_ADMIN_PASSWORD }),
-      true,
-      `${DEMO_ADMIN_EMAIL} / ${DEMO_ADMIN_PASSWORD} is the preview's way in`,
+  it("carries the school's SBFP form header, and never changes a school's id", async () => {
+    await saveSchoolProfile(freshSql, "es01", { principal: "Mrs. Reyes" });
+    const [school] = await listSchools(freshSql, { only: ["es01"] });
+    assert.equal(school?.principal, "Mrs. Reyes");
+    assert.equal(school?.id, "es01", "a header edit must not re-key the school");
+  });
+
+  it("renames a school in place and refuses a duplicate name", async () => {
+    const renamed = await updateSchool(freshSql, "es02", { name: "Anonas Elementary School (Main)" });
+    assert.equal(renamed.id, "es02");
+    assert.equal(renamed.name, "Anonas Elementary School (Main)");
+    await assert.rejects(
+      updateSchool(freshSql, "es01", { name: "Anonas Elementary School (Main)" }),
+      /already on the list/,
     );
-    assert.equal(await verifyPassword({ hash: credential.hash, password: "qwertyuiop1" }), false);
+  });
 
-    // Idempotent, and it must never clobber an account that already exists —
-    // including one the Division Office made for itself at first-run setup.
-    assert.equal(await ensureDemoAdmin(freshSql, { preview: true }), false);
-    assert.equal((await listAccounts(freshSql)).filter((a) => a.role === "admin").length, 1);
+  it("refuses to remove a school that still holds records", async () => {
+    await upsertRecord(freshSql, "es02", record("es02_r1", "Learner"));
+    await assert.rejects(deleteSchool(freshSql, "es02"), /still holds/);
+  });
+
+  it("refuses to clear a required school information field", async () => {
+    await saveSchoolProfile(freshSql, "es01", { principal: "Mrs. Reyes" });
+    await assert.rejects(
+      saveSchoolProfile(freshSql, "es01", { principal: "   " }),
+      /Name of Principal \/ School Head is required/,
+    );
+    assert.equal((await getSchoolProfile(freshSql, "es01"))?.principal, "Mrs. Reyes");
+  });
+
+  it("refuses a learner record with no measurements", async () => {
+    await assert.rejects(
+      upsertRecord(freshSql, "es01", record("es01_r0", "Learner", { weight: "0", height: "0" })),
+      /Weight must be/,
+    );
+  });
+});
+
+describe("school years", () => {
+  let diff: PGlite;
+  let db: Sql;
+
+  before(async () => {
+    diff = await emptyDb();
+    db = toSql(diff);
+    await createAccount(db, {
+      email: ADMIN,
+      password: "sbpf-admin-2025",
+      role: "admin",
+      fullName: "Division SBFP Coordinator",
+    });
+  });
+
+  after(async () => {
+    await diff.close();
+  });
+
+  it("starts on the year the existing records carry", async () => {
+    assert.equal(await getActiveSchoolYear(db), "2025-2026");
+    const years = await listSchoolYears(db);
+    assert.equal(years.length, 1);
+    assert.equal(years[0].sy, "2025-2026");
+    assert.equal(years[0].active, true);
+    assert.equal(years[0].records, 0);
+  });
+
+  it("counts period rows, distinct learners and feedback per year", async () => {
+    await saveSchoolProfile(db, SCHOOL_A, { principal: "Mr. Reyes", schoolIdNumber: "100123" }, ADMIN);
+    await upsertRecord(db, SCHOOL_A, record("sy_a1", "Learner A"));
+    await upsertRecord(db, SCHOOL_A, record("sy_a2", "Learner A", { period: "Midline" }));
+    await insertFeedback(
+      db,
+      SCHOOL_A,
+      {
+        id: "sy_f1",
+        author: "Dela Cruz, Maria",
+        role: "SBFP Feeding Focal Person",
+        category: "Feeding Implementation",
+        rating: 5,
+        message: "Feeding started on schedule.",
+        createdAt: "2026-07-20",
+        status: "New",
+      },
+      ADMIN,
+    );
+
+    const years = await listSchoolYears(db);
+    assert.equal(years[0].records, 2, "both period rows belong to the year");
+    assert.equal(years[0].learners, 1, "the same learner is counted once");
+    assert.equal(years[0].feedback, 1);
+    assert.equal(years[0].schools, 1);
+
+    // The still-active year's export reads today's live school information.
+    const open = await getArchivedYear(db, "2025-2026");
+    assert.equal(open.records.length, 2);
+    assert.equal(open.feedbacks.length, 1);
+    assert.equal(open.profiles[SCHOOL_A]?.principal, "Mr. Reyes");
+  });
+
+  it("refuses a year that does not follow the active one", async () => {
+    for (const sy of ["2024-2025", "2026-2028", "SY 2026-2027"]) {
+      await assert.rejects(
+        () => startNewSchoolYear(db, sy),
+        (err: unknown) => err instanceof SchoolYearError && err.code === "invalid_year",
+        `${sy} must be refused`,
+      );
+    }
+    // The year that is already open cannot be opened a second time.
+    await assert.rejects(
+      () => startNewSchoolYear(db, "2025-2026"),
+      (err: unknown) => err instanceof SchoolYearError && err.code === "year_exists",
+    );
+    assert.equal(await getActiveSchoolYear(db), "2025-2026", "a refused year changes nothing");
+  });
+
+  it("closes the old year, archives its data and resets everything but accounts", async () => {
+    const result = await startNewSchoolYear(db, "2026-2027");
+    assert.deepEqual(result, { sy: "2026-2027", closedSy: "2025-2026" });
+
+    const years = await listSchoolYears(db);
+    assert.deepEqual(years.map((y) => y.sy), ["2026-2027", "2025-2026"]);
+    assert.equal(years[0].active, true);
+    assert.equal(years[0].records, 0, "the new year starts empty");
+    assert.equal(years[0].feedback, 0);
+    assert.ok(years[1].closedAt, "the old year is closed");
+    assert.equal(years[1].records, 2, "its rows are still there");
+    assert.equal(years[1].learners, 1);
+
+    // The archive holds the year's rows and the form header it closed with.
+    const archived = await getArchivedYear(db, "2025-2026");
+    assert.deepEqual(archived.records.map((r) => r.id).sort(), ["sy_a1", "sy_a2"]);
+    assert.equal(archived.feedbacks[0].id, "sy_f1");
+    assert.equal(archived.profiles[SCHOOL_A]?.principal, "Mr. Reyes");
+    assert.equal(archived.profiles[SCHOOL_A]?.schoolIdNumber, "100123");
+
+    // Live school information is blank for the new year ...
+    assert.equal(await getSchoolProfile(db, SCHOOL_A), null);
+    // ... while the account is still there, unchanged.
+    const account = await findAccountByEmail(db, ADMIN);
+    assert.equal(account?.role, "admin");
+    assert.equal(account?.status, "active");
+
+    const admin = await resolveAccess(db, ADMIN);
+    assert.ok(admin);
+    const workspace = await pullData(db, admin);
+    assert.equal(workspace.activeSy, "2026-2027");
+    assert.deepEqual(workspace.records, [], "the console no longer sees last year's rows");
+    assert.deepEqual(workspace.feedbacks, []);
+  });
+
+  it("stamps new rows with the active year and keeps both years apart", async () => {
+    // The learner encoded last year is found in the archive for Data Entry's
+    // "SBFP beneficiary in previous years?" — by name, and by name + birthday.
+    assert.equal(await previousBeneficiaryYear(db, SCHOOL_A, "Learner A"), "2025-2026");
+    assert.equal(await previousBeneficiaryYear(db, SCHOOL_A, "  learner   a  "), "2025-2026");
+    assert.equal(await previousBeneficiaryYear(db, SCHOOL_A, "Learner A", "2016-04-02"), "2025-2026");
+    assert.equal(await previousBeneficiaryYear(db, SCHOOL_A, "Learner A", "2016-04-03"), null, "a namesake with another birthday is someone else");
+    assert.equal(await previousBeneficiaryYear(db, SCHOOL_A, "Nobody"), null);
+
+    await upsertRecord(db, SCHOOL_A, record("sy_a3", "Learner B", { sy: "2025-2026" }));
+    await insertFeedback(
+      db,
+      SCHOOL_A,
+      {
+        id: "sy_f2",
+        author: "Dela Cruz, Maria",
+        role: "SBFP Feeding Focal Person",
+        category: "Feeding Implementation",
+        rating: 4,
+        message: "Second year feedback.",
+        createdAt: "2027-07-20",
+        status: "New",
+      },
+      ADMIN,
+    );
+
+    const rows = await db.query<{ sy: string }>("select sy from sbfp_records where id = $1", ["sy_a3"]);
+    assert.equal(rows[0].sy, "2026-2027", "the server's year wins over the form's stale value");
+    const feedback = await db.query<{ sy: string }>("select sy from sbfp_feedback where id = $1", ["sy_f2"]);
+    assert.equal(feedback[0].sy, "2026-2027");
+
+    const years = await listSchoolYears(db);
+    assert.equal(years[0].records, 1);
+    assert.equal(years[0].feedback, 1);
+    assert.equal(years[1].records, 2, "the archived year is untouched");
+
+    const admin = await resolveAccess(db, ADMIN);
+    assert.ok(admin);
+    const workspace = await pullData(db, admin);
+    assert.deepEqual(workspace.records.map((r) => r.id), ["sy_a3"]);
+    assert.deepEqual(workspace.feedbacks.map((f) => f.id), ["sy_f2"]);
+
+    const archived = await getArchivedYear(db, "2025-2026");
+    assert.deepEqual(archived.records.map((r) => r.id).sort(), ["sy_a1", "sy_a2"]);
+    assert.deepEqual(archived.feedbacks.map((f) => f.id), ["sy_f1"]);
+  });
+
+  it("refuses to open a year that already exists, or an unknown archive", async () => {
+    await assert.rejects(
+      () => startNewSchoolYear(db, "2026-2027"),
+      (err: unknown) => err instanceof SchoolYearError && err.code === "year_exists",
+    );
+    await assert.rejects(
+      () => getArchivedYear(db, "2030-2031"),
+      (err: unknown) => err instanceof SchoolYearError && err.code === "year_not_found",
+    );
+    assert.equal(await getActiveSchoolYear(db), "2026-2027");
+  });
+
+  it("can close a second year and keep all three readable", async () => {
+    await startNewSchoolYear(db, "2027-2028");
+    const years = await listSchoolYears(db);
+    assert.deepEqual(years.map((y) => y.sy), ["2027-2028", "2026-2027", "2025-2026"]);
+    assert.equal(years[0].records, 0);
+    assert.equal(years[1].records, 1);
+    assert.equal(years[2].records, 2);
+
+    // No school information was entered in 2026-2027 (it was reset at the
+    // start of the year), so that archive has no header for the school rather
+    // than borrowing 2025-2026's principal. Exports fall back to a blank form.
+    const archived = await getArchivedYear(db, "2026-2027");
+    assert.equal(archived.profiles[SCHOOL_A], undefined);
   });
 });

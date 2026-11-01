@@ -1,6 +1,7 @@
 // SBFP Form 1A (.xlsx) export built on ExcelJS (Form 1A + Form 2) — real merges, styles and
 // embedded logo images (DepEd left, OK sa DepEd right), matching the printed form.
 import { Workbook, type Worksheet, type Cell } from "exceljs";
+import type { SummaryMatrixRow } from "./sbfp-domain.ts";
 
 // ── Shared form types (mirrors src/sbfp-app.tsx) ───────────────────────────────
 export type GradeLevel =
@@ -121,6 +122,7 @@ export async function buildSbfpWorkbook(
   periodLabel: string,
   logoLeft?: string,
   logoRight?: string,
+  sy = "2025-2026",
 ): Promise<ArrayBuffer> {
   const titlePeriod = periodLabel === "All" ? "ALL PERIODS" : periodLabel.toUpperCase();
   const sorted = sortRecords(rows);
@@ -163,14 +165,14 @@ export async function buildSbfpWorkbook(
   ws.getRow(5).height = 20;
   ws.mergeCells("A5:S5");
   ws.getCell("A5").value =
-    `Master List of Beneficiaries for School-Based Feeding Program (SBFP) | SY 2025-2026 — ${titlePeriod}`;
+    `Master List of Beneficiaries for School-Based Feeding Program (SBFP) | SY ${sy} — ${titlePeriod}`;
   ws.getCell("A5").font = { name: FONT, size: 12, bold: true };
   ws.getCell("A5").alignment = { horizontal: "center", vertical: "middle" };
 
   // Form details — bold label + value in adjacent cells (rows 7–11)
   const details: [string, string, string][] = [
     ["A7", "Division:", school.division || ""],
-    ["H7", "Name of Principal:", school.principal || ""],
+    ["H7", "Name of Principal / School Head:", school.principal || ""],
     ["A8", "City/Municipality/Barangay:", school.cityMunicipalityBarangay || ""],
     ["H8", "Name of Feeding Focal Person:", school.focalPerson || ""],
     ["A9", "Name of School / School District :", school.name || ""],
@@ -258,7 +260,7 @@ export async function buildSbfpWorkbook(
   ws.getCell(`B${signRow}`).font = { name: FONT, size: 10, bold: true };
   ws.getCell(`B${signRow + 2}`).value = "________________________";
   ws.getCell(`B${signRow + 2}`).font = { name: FONT, size: 11, bold: true };
-  ws.getCell(`B${signRow + 3}`).value = "School Head";
+  ws.getCell(`B${signRow + 3}`).value = "School Head / Principal";
   ws.getCell(`B${signRow + 3}`).font = { name: FONT, size: 11, bold: true };
 
   return (await workbook.xlsx.writeBuffer()) as unknown as ArrayBuffer;
@@ -270,20 +272,7 @@ export async function buildSbfpWorkbook(
  * bucket. The caller passes the numbers it already computed for the screen, so
  * the workbook can never drift from the table — including the SPED grade merge.
  */
-export interface SummaryMatrixRow {
-  grade: string;
-  sex: "M" | "F" | "Total";
-  /** BMI counts, in the same order as `bmiStatuses`. */
-  bmi: number[];
-  /** HFA counts, in the same order as `hfaStatuses`. */
-  hfa: number[];
-  /** Learners with `pregnant` or `hasYoungChildren` = Yes. */
-  pregnantYoung: number;
-  /** Learners dewormed (Yes). */
-  dewormed: number;
-  fourPs: number;
-  sbfp: number;
-}
+export type { SummaryMatrixRow } from "./sbfp-domain.ts";
 
 export interface SummaryExportInput {
   school: SchoolFormInfo;
@@ -523,9 +512,9 @@ export async function buildSummaryWorkbook(
         ...HEIGHT_COLUMN_LABELS.map(label => countFor(row.hfa, hfaStatuses, [label])),
         row.hfa.reduce((a, b) => a + b, 0),
         row.pregnantYoung,
-        null, // not captured by the app: No. of Pupils at risk of dropping out
+        row.atRisk,
         countFor(row.hfa, hfaStatuses, STUNTED_STATUSES),
-        null, // not captured by the app: No. of Indigenous Peoples (IPs)
+        row.ips,
         row.dewormed,
         row.fourPs,
         row.sbfp,
@@ -558,7 +547,7 @@ export async function buildSummaryWorkbook(
     [signRow + 3, preparedCol, school.focalPerson || ""],
     [signRow + 4, preparedCol, "SBFP DepEd Focal"],
     [signRow + 3, approvedCol, school.principal || ""],
-    [signRow + 4, approvedCol, "School Head"],
+    [signRow + 4, approvedCol, "School Head / Principal"],
   ];
   for (const [rowNo, col, text] of signatures) {
     const cell = ws.getCell(rowNo, col);
@@ -632,20 +621,21 @@ export async function exportStudentsToExcel(
   school: SchoolFormInfo,
   rows: StudentRecord[],
   periodLabel: string,
+  sy = "2025-2026",
 ) {
   const [logoLeft, logoRight] = await Promise.all([
     fetchLogoBase64("/deped-logo.png"),
     fetchLogoBase64("/ok-sa-deped.png"),
   ]);
 
-  const buffer = await buildSbfpWorkbook(school, rows, periodLabel, logoLeft, logoRight);
+  const buffer = await buildSbfpWorkbook(school, rows, periodLabel, logoLeft, logoRight, sy);
   const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   const safeName = school.name.replace(/[^\w\s-]/g, "").replace(/\s+/g, "_");
   const safePeriod = periodLabel.replace(/\s+/g, "_");
   a.href = url;
-  a.download = `SBFP_Form_1A_${safeName}_${safePeriod}_SY2025-2026.xlsx`;
+  a.download = `SBFP_Form_1A_${safeName}_${safePeriod}_SY${sy}.xlsx`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

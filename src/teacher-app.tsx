@@ -18,8 +18,6 @@ import {
   EMPTY_STUDENT,
   FEEDBACK_CATEGORIES,
   HFA_STATUSES,
-  INIT_ES,
-  INIT_HS,
   PERIODS,
   SPED_SCHOOL_NAME,
   calcBMI,
@@ -27,13 +25,17 @@ import {
   classifyBeneficiary,
   classifyHFA,
   computeAge,
+  countsAsPregnantOrYoung,
+  defaultsToNotPregnant,
+  formatDateMDY,
   getGrades,
+  mustNotBePregnant,
   shortDate,
   sortRecords,
   uniqueCount,
 } from "@/lib/sbfp-shared";
 // Type-only: erased at build time, so ExcelJS stays out of the initial bundle.
-import type { SummaryMatrixRow } from "@/lib/sbfp-export";
+import type { SummaryMatrixRow } from "@/lib/sbfp-shared";
 import type {
   BMIStatus,
   FeedbackCategory,
@@ -55,6 +57,7 @@ import {
   newRecordId,
   profileStatus,
   removeRecord,
+  restoreRecord,
   saveProfile,
   sendFeedback,
   updateRecord,
@@ -65,15 +68,15 @@ import { syncWorkspace } from "@/lib/sbfp-store";
 import { useAccess } from "@/lib/use-access";
 import type { Access } from "@/lib/use-access";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { Form2Sheet } from "@/components/form2-sheet";
+import { manualTotal, useForm2Extras } from "@/lib/use-form2-extras";
 import { UserButton } from "@/lib/auth/gates";
-import { authClient } from "@/lib/auth/client";
+import { authClient, signOut } from "@/lib/auth/client";
 import { signInErrorMessage } from "@/lib/auth/sign-in-error";
-import { changeOwnPassword } from "@/lib/sbfp-api";
+import { changeOwnPassword, lookupPreviousBeneficiary } from "@/lib/sbfp-api";
 import { MIN_PASSWORD_LENGTH } from "@/lib/sbfp-credentials";
-
-/** The 58 Urdaneta City schools, by name, exactly as the district console lists them. */
-const SCHOOLS: School[] = [...INIT_ES, ...INIT_HS].sort((a, b) => a.name.localeCompare(b.name));
-const SCHOOL_BY_ID = new Map(SCHOOLS.map(s => [s.id, s]));
+import { learnerProblem } from "@/lib/sbfp-validation";
+import { formatSchoolYear } from "@/lib/sbfp-years";
 
 // ── Look: the school's own site — warm paper, DepEd navy and gold, soft cards ──
 const C = {
@@ -122,7 +125,7 @@ const control: CSSProperties = {
   outline: "none",
 };
 
-type Tab = "overview" | "profile" | "entry" | "records" | "summary" | "feedback";
+type Tab = "overview" | "profile" | "entry" | "records" | "summary" | "feedback" | "trash";
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: "overview", label: "Overview", icon: "⌂" },
@@ -131,6 +134,7 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: "records", label: "My Records", icon: "☰" },
   { id: "summary", label: "Summary Table", icon: "≡" },
   { id: "feedback", label: "Feedback", icon: "✉" },
+  { id: "trash", label: "Trash", icon: "♲" },
 ];
 
 // ── Small building blocks ─────────────────────────────────────────────────────
@@ -285,14 +289,24 @@ function Stars({ value }: { value: number }) {
   );
 }
 
-function YesNoToggle({ value, onChange }: { value: YesNo; onChange: (v: YesNo) => void }) {
+function YesNoToggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: YesNo;
+  onChange: (v: YesNo) => void;
+  /** A rule decided the answer; the learner cannot be marked the other way. */
+  disabled?: boolean;
+}) {
   return (
-    <div className="flex gap-2">
+    <div className="flex gap-2" style={{ opacity: disabled ? 0.65 : 1 }}>
       {(["Yes", "No"] as YesNo[]).map(v => (
         <button
           key={v}
           type="button"
-          onClick={() => onChange(value === v ? "" : v)}
+          onClick={() => !disabled && onChange(value === v ? "" : v)}
+          disabled={disabled}
           className="flex-1"
           style={{
             padding: "7px 0",
@@ -302,7 +316,7 @@ function YesNoToggle({ value, onChange }: { value: YesNo; onChange: (v: YesNo) =
             background: value === v ? C.navySoft : C.surface,
             color: value === v ? C.navy : C.sub,
             fontWeight: value === v ? 600 : 400,
-            cursor: "pointer",
+            cursor: disabled ? "not-allowed" : "pointer",
           }}
         >
           {v}
@@ -360,20 +374,6 @@ function Button({
 const bmiTone = (s: string): "good" | "warn" | "danger" | "gold" | "muted" =>
   s === "Normal" ? "good" : s === "Severely Wasted" ? "danger" : s === "Wasted" ? "warn" : s ? "gold" : "muted";
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
-// Shown for the one tick before the saved school is read back, so a reload
-// never flashes the sign-in screen at a teacher who is already registered.
-function Boot() {
-  return (
-    <div style={{ minHeight: "100vh", background: C.bg, fontFamily: font, color: C.text, display: "grid", placeItems: "center" }}>
-      <div className="text-center">
-        <img src="/school-health-wheel.svg" alt="" width={42} height={42} style={{ margin: "0 auto", opacity: 0.45 }} />
-        <p style={{ fontSize: 13, color: C.dim, marginTop: 14 }}>Opening your school…</p>
-      </div>
-    </div>
-  );
-}
-
 // ── Sign in ───────────────────────────────────────────────────────────────────
 // Accounts are issued by the Division Office, so there is nothing to register
 // here: a teacher signs in with the email and the temporary password she was
@@ -407,7 +407,10 @@ function TeacherSignIn({ access, notice }: { access: Access; notice?: ReactNode 
         );
         return;
       }
-      void syncWorkspace(email.trim().toLowerCase(), true);
+      // Wait for this identity's workspace before releasing the button: the
+      // portal can then open on the school's data instead of flashing the form
+      // again while the first read is still in flight.
+      await syncWorkspace(email.trim().toLowerCase(), true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed.");
     } finally {
@@ -478,7 +481,7 @@ function TeacherSignIn({ access, notice }: { access: Access; notice?: ReactNode 
           </div>
 
           <div style={{ fontSize: 12, color: C.dim, marginTop: 18 }}>
-            {SCHOOLS.length} schools in the division · one account per school
+            One account per school, for every school in the division
           </div>
         </div>
 
@@ -771,14 +774,30 @@ function Overview({ profile, school, go }: { profile: TeacherProfile; school: Sc
 function ProfileScreen({ profile, school }: { profile: TeacherProfile; school: School }) {
   const [form, setForm] = useState<TeacherProfile>(profile);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
 
   const status = profileStatus(form);
+  /**
+   * Nothing is saved while a required field is blank. The four marked fields
+   * are printed on every SBFP form, so a partial header is a form the district
+   * cannot print — the server refuses to clear one as well.
+   */
+  const missing = !form.teacherName.trim()
+    ? "your name"
+    : status.missing.map(([, label]) => label).join(" · ");
+  const canSave = !missing;
+
   const set = <K extends keyof TeacherProfile>(key: K, value: TeacherProfile[K]) => {
     setForm(f => ({ ...f, [key]: value }));
     setSaved(false);
+    setError("");
   };
 
   const save = () => {
+    if (!canSave) {
+      setError(`Still needed: ${missing}`);
+      return;
+    }
     const { schoolId: _id, ...patch } = form;
     saveProfile(school.id, patch);
     setSaved(true);
@@ -786,7 +805,7 @@ function ProfileScreen({ profile, school }: { profile: TeacherProfile; school: S
   };
 
   const detailFields: [keyof SchoolFormDetails, string, string][] = [
-    ["principal", "Name of Principal", "Printed on both SBFP forms."],
+    ["principal", "Name of Principal / School Head", "Printed on both SBFP forms."],
     ["focalPerson", "Name of Feeding Focal Person", "The signatory on the printed forms."],
     ["schoolIdNumber", "School ID Number", "The DepEd school ID of this school."],
     ["cityMunicipalityBarangay", "City/Municipality/Barangay", "e.g. Urdaneta City, Barangay San Vicente East."],
@@ -802,7 +821,7 @@ function ProfileScreen({ profile, school }: { profile: TeacherProfile; school: S
         action={
           <div className="flex items-center gap-3">
             {saved && <span style={{ fontSize: 12, color: C.good, fontWeight: 600 }}>✓ Saved</span>}
-            <Button onClick={save} disabled={!status.complete && !form.teacherName.trim()}>Save profile</Button>
+            <Button onClick={save} disabled={!canSave}>Save profile</Button>
           </div>
         }
       >
@@ -856,9 +875,17 @@ function ProfileScreen({ profile, school }: { profile: TeacherProfile; school: S
           </Field>
         </div>
         <div className="flex items-center gap-3 mt-6 flex-wrap">
-          <Button onClick={save}>Save profile</Button>
+          <Button onClick={save} disabled={!canSave}>Save profile</Button>
           {saved && <span style={{ fontSize: 12, color: C.good, fontWeight: 600 }}>✓ Saved — the district office sees this now</span>}
+          {!canSave && (
+            <span style={{ fontSize: 11.5, color: C.warn }}>
+              Fill in every required field before saving.
+            </span>
+          )}
         </div>
+        {error && (
+          <p role="alert" style={{ fontSize: 12.5, color: C.danger, marginTop: 10 }}>{error}</p>
+        )}
       </Card>
 
       <AccountCard profile={profile} />
@@ -904,8 +931,10 @@ function AccountCard({ profile }: { profile: TeacherProfile }) {
     setNext("");
     setAgain("");
     setDone(true);
-    void syncWorkspace(profile.email, true);
-    setTimeout(() => setDone(false), 3000);
+    // Changing the password ends every session for the account on the server
+    // (that is what makes a stolen session die with the old password), so this
+    // one goes too — back to the sign-in screen with the new password.
+    window.setTimeout(() => void signOut("/teacher"), 1600);
   };
 
   return (
@@ -956,9 +985,9 @@ function AccountCard({ profile }: { profile: TeacherProfile }) {
           <Button onClick={submit} disabled={busy}>
             {busy ? "Saving…" : "Change password"}
           </Button>
-          {done && <span style={{ fontSize: 12, color: C.good, fontWeight: 600 }}>✓ Password changed</span>}
+          {done && <span style={{ fontSize: 12, color: C.good, fontWeight: 600 }}>✓ Password changed — sign in again</span>}
           <span style={{ fontSize: 11.5, color: C.dim }}>
-            A different teacher taking over this school gets the account changed from the Division Office.
+            Saving signs you out on every device, including this one.
           </span>
         </div>
       </div>
@@ -979,13 +1008,22 @@ function DataEntry({
   clearEditing: () => void;
   goRecords: () => void;
 }) {
+  const activeSy = useTeacherStore().activeSy;
   const [period, setPeriod] = useState<Period | null>(editing?.period ?? null);
   const [form, setForm] = useState<Omit<Student, "id">>(() =>
-    editing ? { ...editing } : EMPTY_STUDENT(school.id, ""),
+    editing ? { ...editing } : EMPTY_STUDENT(school.id, "", activeSy),
   );
   const [saved, setSaved] = useState(false);
   const [periodError, setPeriodError] = useState(false);
   const [nameError, setNameError] = useState(false);
+  /** Why the record cannot be saved (missing or impossible measurements). */
+  const [formError, setFormError] = useState("");
+  /** The past school year this learner's record was found in, or null. */
+  const [previousSy, setPreviousSy] = useState<string | null>(null);
+  /** The teacher answered the previous-years question herself — respected. */
+  const previousTouched = useRef(false);
+  /** The current "Yes" was set by the archive lookup, not by a person. */
+  const autoPrevious = useRef(false);
   /**
    * A status the teacher picked by hand outranks the WHO auto-classification for
    * this record, while a status that was only ever computed is cleared when the
@@ -997,8 +1035,15 @@ function DataEntry({
   // Opening a row for editing from My Records repopulates the form with it.
   useEffect(() => {
     resetManualStatus();
+    previousTouched.current = false;
+    autoPrevious.current = false;
+    setPreviousSy(null);
     if (editing) {
-      setForm({ ...editing });
+      const loaded = { ...editing };
+      // Only a male learner is locked to "No"; an older row saved under the
+      // old age-10 rule keeps whatever is stored until someone edits the age.
+      if (mustNotBePregnant(loaded.sex)) loaded.pregnant = "No";
+      setForm(loaded);
       setPeriod(editing.period);
       setPeriodError(false);
       setNameError(false);
@@ -1006,6 +1051,58 @@ function DataEntry({
   }, [editing?.id]);
 
   const grades = getGrades(school);
+
+  // "SBFP beneficiary in previous years?" is answered from the archive: once a
+  // name (and date of birth, when one is entered) is on the form, ask the
+  // server whether the school already had this learner in a past year. The
+  // lookup is debounced, returns only the year, and never overrides a choice
+  // the teacher has made herself.
+  useEffect(() => {
+    if (editing) return;
+    const name = form.name.trim();
+    if (name.length < 3) {
+      if (autoPrevious.current) {
+        autoPrevious.current = false;
+        setForm((f) =>
+          f.sbfpPreviousYears === "Yes" ? { ...f, sbfpPreviousYears: "No" } : f,
+        );
+      }
+      setPreviousSy(null);
+      return;
+    }
+    if (previousTouched.current) {
+      setPreviousSy(null);
+      return;
+    }
+    let live = true;
+    const timer = setTimeout(() => {
+      void lookupPreviousBeneficiary({ data: { name, dateOfBirth: form.dateOfBirth } })
+        .then((result) => {
+          if (!live) return;
+          setPreviousSy(result.sy);
+          if (result.sy) {
+            autoPrevious.current = true;
+            setForm((f) =>
+              f.sbfpPreviousYears === "Yes" ? f : { ...f, sbfpPreviousYears: "Yes" },
+            );
+          } else if (autoPrevious.current) {
+            // The name moved on to someone with no archive match; take back
+            // the auto "Yes" rather than leave a stale answer on the form.
+            autoPrevious.current = false;
+            setForm((f) =>
+              f.sbfpPreviousYears === "Yes" ? { ...f, sbfpPreviousYears: "No" } : f,
+            );
+          }
+        })
+        .catch(() => {
+          if (live) setPreviousSy(null);
+        });
+    }, 400);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [form.name, form.dateOfBirth, editing?.id]);
 
   /**
    * Same rules as the district console's Data Entry: ages from the date of
@@ -1015,6 +1112,11 @@ function DataEntry({
    */
   const set = (key: keyof Omit<Student, "id">, value: string) => {
     setNameError(false);
+    setFormError("");
+    if (key === "sbfpPreviousYears") {
+      previousTouched.current = true;
+      autoPrevious.current = false;
+    }
     if (key === "bmiStatus") manualStatus.current.bmi = true;
     if (key === "hfaStatus") manualStatus.current.hfa = true;
     setForm(f => {
@@ -1041,6 +1143,16 @@ function DataEntry({
         const auto = classifyBeneficiary(next.gradeLevel, next.bmiStatus, next.hfaStatus);
         if (auto) next.classificationOfBeneficiary = auto;
       }
+      // A male learner is locked to "No". A female learner aged 10 or below
+      // only *defaults* to "No" when sex or age changes; she can still be
+      // marked pregnant on purpose, so a later click on Yes is not undone.
+      if (mustNotBePregnant(next.sex)) next.pregnant = "No";
+      else if (
+        (key === "sex" || key === "dateOfBirth" || key === "ageYears") &&
+        defaultsToNotPregnant(next.sex, next.ageYears)
+      ) {
+        next.pregnant = "No";
+      }
       return next;
     });
   };
@@ -1060,6 +1172,15 @@ function DataEntry({
       setNameError(true);
       return;
     }
+    // A record with no weight or height has no BMI and no nutritional status;
+    // it must not be saved as if it were a weighed learner. The server checks
+    // the same rule (`learnerProblem` in @/lib/sbfp-validation).
+    const problem = learnerProblem({ name: form.name, period, weight: form.weight, height: form.height });
+    if (problem) {
+      setFormError(problem);
+      return;
+    }
+    setFormError("");
     if (editing) {
       updateRecord(editing.id, { ...form, period });
       clearEditing();
@@ -1071,7 +1192,10 @@ function DataEntry({
     setTimeout(() => setSaved(false), 2500);
     setPeriod(null);
     resetManualStatus();
-    setForm(EMPTY_STUDENT(school.id, ""));
+    previousTouched.current = false;
+    autoPrevious.current = false;
+    setPreviousSy(null);
+    setForm(EMPTY_STUDENT(school.id, "", activeSy));
   };
 
   const clear = () => {
@@ -1079,7 +1203,10 @@ function DataEntry({
     setPeriodError(false);
     setNameError(false);
     resetManualStatus();
-    setForm(EMPTY_STUDENT(school.id, ""));
+    previousTouched.current = false;
+    autoPrevious.current = false;
+    setPreviousSy(null);
+    setForm(EMPTY_STUDENT(school.id, "", activeSy));
   };
 
   const ageYears = parseInt(form.ageYears) || 0;
@@ -1194,10 +1321,10 @@ function DataEntry({
       <Card title="Measurements" subtitle="BMI and the WHO 2007 statuses are computed for you — override them if the school's own measurement says otherwise.">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Field text="Weight (kg)">
-            <input type="number" step="0.1" min={0} value={form.weight} onChange={e => set("weight", e.target.value)} placeholder="e.g. 24.5" style={control} />
+            <input type="number" step="0.1" min={0.1} max={300} required value={form.weight} onChange={e => set("weight", e.target.value)} placeholder="e.g. 24.5" style={control} />
           </Field>
           <Field text="Height (cm)">
-            <input type="number" step="0.1" min={0} value={form.height} onChange={e => set("height", e.target.value)} placeholder="e.g. 118.0" style={control} />
+            <input type="number" step="0.1" min={1} max={250} required value={form.height} onChange={e => set("height", e.target.value)} placeholder="e.g. 118.0" style={control} />
           </Field>
           <Field text={`BMI ${ageYears >= 6 ? "(auto)" : "(6 y.o.+)"}`}>
             <input
@@ -1265,12 +1392,36 @@ function DataEntry({
             ["Parent's consent for milk?", "parentConsentMilk"],
             ["Participation in 4Ps?", "fourPs"],
             ["SBFP beneficiary in previous years?", "sbfpPreviousYears"],
-          ] as [string, keyof Omit<Student, "id">][]).map(([text, key]) => (
-            <div key={key as string}>
-              <span style={label}>{text}</span>
-              <YesNoToggle value={form[key] as YesNo} onChange={v => set(key, v)} />
-            </div>
-          ))}
+          ] as [string, keyof Omit<Student, "id">][]).map(([text, key]) => {
+            const locked = key === "pregnant" && mustNotBePregnant(form.sex);
+            const defaultsNo = key === "pregnant" && !locked &&
+              defaultsToNotPregnant(form.sex, form.ageYears);
+            return (
+              <div key={key as string}>
+                <span style={label}>{text}</span>
+                <YesNoToggle
+                  value={form[key] as YesNo}
+                  onChange={v => set(key, v)}
+                  disabled={locked}
+                />
+                {locked && (
+                  <p style={{ fontSize: 11, color: C.dim, marginTop: 5, lineHeight: 1.45 }}>
+                    Male learners are recorded as not pregnant.
+                  </p>
+                )}
+                {defaultsNo && (
+                  <p style={{ fontSize: 11, color: C.dim, marginTop: 5, lineHeight: 1.45 }}>
+                    Defaults to No at age 10 or below — you can still change it.
+                  </p>
+                )}
+                {key === "sbfpPreviousYears" && previousSy && (
+                  <p style={{ fontSize: 11, color: C.good, marginTop: 5, lineHeight: 1.45 }}>
+                    This learner already has a record in SY {formatSchoolYear(previousSy)}.
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
         <div className="flex items-center gap-3 mt-6 flex-wrap">
           <Button onClick={save}>{editing ? "Update record" : "Save learner record"}</Button>
@@ -1281,6 +1432,11 @@ function DataEntry({
           )}
           {saved && <span style={{ fontSize: 12, color: C.good, fontWeight: 600 }}>✓ Saved</span>}
         </div>
+        {formError && (
+          <p role="alert" style={{ fontSize: 12.5, color: C.danger, marginTop: 12, lineHeight: 1.55 }}>
+            {formError}
+          </p>
+        )}
       </Card>
     </div>
   );
@@ -1302,6 +1458,8 @@ function MyRecords({
   const [q, setQ] = useState("");
   /** The record the teacher asked to delete — nothing is removed until she confirms. */
   const [pendingDelete, setPendingDelete] = useState<Student | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
 
   const mine = useMemo(
     () => sortRecords(store.records.filter(r => r.schoolId === school.id)),
@@ -1313,78 +1471,235 @@ function MyRecords({
     (!needle || `${r.name} ${r.gradeLevel} ${r.bmiStatus} ${r.hfaStatus}`.toLowerCase().includes(needle)),
   );
 
+  /**
+   * SBFP Form 1A — the master list, with the same header block, columns and
+   * signature footer the Division Office prints. It exports exactly what the
+   * teacher is looking at (the period tab and the search), so a filtered list
+   * is a filtered form.
+   */
+  const exportForm1 = async () => {
+    setExportError("");
+    if (visible.length === 0) return;
+    setExporting(true);
+    try {
+      const { exportStudentsToExcel } = await import("@/lib/sbfp-export");
+      await exportStudentsToExcel(
+        school,
+        visible,
+        period === "All" ? "All" : period,
+        store.activeSy,
+      );
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : "The Form 1 file could not be built.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const th: CSSProperties = {
+    color: C.dim,
+    borderRight: `1px solid ${C.border}`,
+    borderBottom: `1px solid ${C.border}`,
+    background: C.surface2,
+    verticalAlign: "middle",
+  };
+  const td = (v: string | number, opts?: { mono?: boolean; color?: string; nowrap?: boolean }) => (
+    <td
+      className="px-1.5 py-2 text-center"
+      style={{
+        fontFamily: opts?.mono ? mono : undefined,
+        color: opts?.color ?? C.sub,
+        borderRight: `1px solid ${C.surface2}`,
+        whiteSpace: opts?.nowrap === false ? "normal" : "nowrap",
+      }}
+    >
+      {v === "" || v === undefined ? "—" : v}
+    </td>
+  );
+
   return (
     <div className="flex flex-col gap-5">
-      <Card
-        title="My Records"
-        subtitle={`${mine.length} record${mine.length === 1 ? "" : "s"} encoded for ${school.name} · ${uniqueCount(mine)} unique learner${uniqueCount(mine) === 1 ? "" : "s"}`}
-        action={<Button small onClick={goEntry}>＋ New learner record</Button>}
-      >
-        <div className="flex flex-wrap items-center gap-3">
-          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search learner, grade or status…" style={{ ...control, maxWidth: 320 }} />
-          <div className="flex gap-2">
-            {(["All", ...PERIODS] as const).map(p => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => setPeriod(p as Period | "All")}
-                style={{
-                  padding: "6px 12px",
-                  fontSize: 12,
-                  borderRadius: 999,
-                  border: `1px solid ${period === p ? C.navy : C.border2}`,
-                  background: period === p ? C.navySoft : C.surface,
-                  color: period === p ? C.navy : C.sub,
-                  fontWeight: period === p ? 600 : 400,
-                  cursor: "pointer",
-                }}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-        </div>
-      </Card>
-
-      {visible.length === 0 ? (
-        <Card>
-          <p style={{ fontSize: 13.5, color: C.sub }}>
-            {mine.length === 0
-              ? "No learner records yet. Encode the Baseline measurements first — the district's Summary Table and Analytics read them."
-              : "No record matches those filters."}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-lg font-semibold" style={{ color: C.text }}>My Records</h1>
+          <p className="text-xs mt-0.5" style={{ color: C.dim }}>
+            {school.name} · SBFP Form 1A · sorted Kinder → Grade 6 · {uniqueCount(mine)} students · {mine.length} period records
           </p>
-          {mine.length === 0 && <div className="mt-4"><Button onClick={goEntry}>Start Data Entry</Button></div>}
-        </Card>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {visible.map(r => (
-            <div
-              key={r.id}
-              className="flex flex-col md:flex-row md:items-center gap-3"
-              style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", background: C.surface }}
-            >
-              <div className="min-w-0 flex-1">
-                <div style={{ fontSize: 14, fontWeight: 500, color: C.text }}>{r.name || "Unnamed learner"}</div>
-                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                  <Pill text={r.period} tone={r.period === "Baseline" ? "navy" : r.period === "Midline" ? "warn" : "good"} />
-                  {r.bmiStatus && <Pill text={r.bmiStatus} tone={bmiTone(r.bmiStatus)} />}
-                  {r.hfaStatus && <Pill text={r.hfaStatus} tone={bmiTone(r.hfaStatus)} />}
-                </div>
-                <div style={{ fontSize: 11.5, color: C.dim, marginTop: 7 }}>
-                  {r.sex === "M" ? "Male" : r.sex === "F" ? "Female" : "Sex not set"} · {r.gradeLevel || "Grade not set"}
-                  {r.weight ? ` · ${r.weight} kg` : ""}{r.height ? ` · ${r.height} cm` : ""}
-                  {r.dateOfWeighing ? ` · weighed ${r.dateOfWeighing}` : ""}
-                  {r.classificationOfBeneficiary ? ` · ${r.classificationOfBeneficiary}` : ""}
-                </div>
-              </div>
-              <div className="flex gap-2 md:justify-end">
-                <Button small tone="ghost" onClick={() => onEdit(r)}>Edit</Button>
-                <Button small tone="ghost" onClick={() => setPendingDelete(r)}>Delete</Button>
-              </div>
-            </div>
-          ))}
         </div>
+        <div className="flex gap-2">
+          <button
+            onClick={exportForm1}
+            disabled={exporting || visible.length === 0}
+            className="px-4 py-2 text-sm font-semibold rounded-sm border transition-colors"
+            style={{
+              background: visible.length === 0 || exporting ? C.surface2 : C.surface,
+              color: visible.length === 0 || exporting ? C.dim : C.navy,
+              borderColor: visible.length === 0 || exporting ? C.border : C.navy + "60",
+              cursor: visible.length === 0 || exporting ? "not-allowed" : "pointer",
+            }}
+            title="SBFP Form 1A master list"
+          >
+            {exporting ? "Exporting…" : "↓ Export Excel"}
+          </button>
+          <button
+            onClick={goEntry}
+            className="px-4 py-2 text-sm font-semibold rounded-sm cursor-pointer"
+            style={{ background: C.navy, color: "#fff" }}
+          >
+            + Add Student
+          </button>
+        </div>
+      </div>
+
+      <div className="flex gap-2 flex-wrap">
+        <input
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder="Search by name or grade…"
+          className="text-sm px-3 py-1.5 rounded-sm outline-none flex-1 min-w-[180px]"
+          style={{ background: C.surface, color: C.text, border: `1px solid ${C.border}` }}
+        />
+        {(["All", ...PERIODS] as const).map(p => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => setPeriod(p as Period | "All")}
+            className="px-3 py-1.5 text-xs rounded-sm cursor-pointer border transition-colors"
+            style={
+              period === p
+                ? { background: C.navySoft, color: C.navy, borderColor: C.navy + "40" }
+                : { background: C.surface, color: C.dim, borderColor: C.border }
+            }
+          >
+            {p}
+          </button>
+        ))}
+      </div>
+
+      {exportError && (
+        <p role="alert" className="text-xs" style={{ color: C.danger }}>
+          {exportError}
+        </p>
       )}
+
+      <p className="text-[10px] md:hidden -mb-2" style={{ color: C.dim }}>
+        Swipe the table sideways to see every column →
+      </p>
+
+      <div style={{ border: `1px solid ${C.border}`, background: C.surface }} className="overflow-x-auto">
+        <table className="w-full text-[10px] min-w-[1480px] border-collapse">
+          <thead>
+            <tr>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>No.</th>
+              <th rowSpan={2} className="px-2 py-2 text-left text-[8px] tracking-widest uppercase" style={th}>Name</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Sex</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Grade / Section</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Date of Birth<br />(MM/DD/YYYY)</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Date of Weighing<br />(MM/DD/YYYY)</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Age in Years / Months</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Weight (Kg)</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Height (cm)</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>BMI for 6 y.o.<br />and above</th>
+              <th colSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase text-center" style={th}>Nutritional Status (NS)</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Classification of<br />Beneficiary</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Pregnant<br />(Yes or No)</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>With 0-1 year old<br />children</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Dewormed<br />(Yes or No)</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Parent's consent<br />for milk</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Participation<br />in 4Ps</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={th}>Beneficiary of SBFP<br />in previous years</th>
+              <th rowSpan={2} className="px-2 py-2 text-[8px] tracking-widest uppercase" style={{ ...th, borderRight: "none" }}>Period / Actions</th>
+            </tr>
+            <tr>
+              <th className="px-2 py-1.5 text-[8px] tracking-widest uppercase text-center" style={th}>BMI-A</th>
+              <th className="px-2 py-1.5 text-[8px] tracking-widest uppercase text-center" style={th}>HFA</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((s, idx) => {
+              const prev = visible[idx - 1];
+              const gradeBreak = Boolean(prev && prev.gradeLevel !== s.gradeLevel);
+              return (
+                <tr
+                  key={s.id}
+                  className="group"
+                  style={{
+                    borderBottom: `1px solid ${C.surface2}`,
+                    background: gradeBreak ? C.surface2 : "transparent",
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = "#faf8f1")}
+                  onMouseLeave={e => (e.currentTarget.style.background = gradeBreak ? C.surface2 : "transparent")}
+                >
+                  {td(idx + 1, { mono: true, color: C.dim })}
+                  <td className="px-2 py-2 text-left font-medium" style={{ color: C.text, borderRight: `1px solid ${C.surface2}`, whiteSpace: "nowrap" }}>{s.name || "—"}</td>
+                  {td(s.sex)}
+                  {td(s.gradeLevel)}
+                  {td(formatDateMDY(s.dateOfBirth), { mono: true })}
+                  {td(formatDateMDY(s.dateOfWeighing), { mono: true })}
+                  {td(`${s.ageYears || "0"}/${s.ageMonths || "0"}`, { mono: true })}
+                  {td(s.weight || "", { mono: true })}
+                  {td(s.height || "", { mono: true })}
+                  {td(s.bmi || "", { mono: true, color: s.bmi ? C.navy : C.dim })}
+                  <td className="px-1.5 py-2 text-center" style={{ borderRight: `1px solid ${C.surface2}` }}>
+                    {s.bmiStatus ? <Pill text={s.bmiStatus} tone={bmiTone(s.bmiStatus)} /> : <span style={{ color: C.dim }}>—</span>}
+                  </td>
+                  <td className="px-1.5 py-2 text-center" style={{ borderRight: `1px solid ${C.surface2}` }}>
+                    {s.hfaStatus ? <Pill text={s.hfaStatus} tone={bmiTone(s.hfaStatus)} /> : <span style={{ color: C.dim }}>—</span>}
+                  </td>
+                  {td(s.classificationOfBeneficiary || "")}
+                  {td(s.pregnant || "")}
+                  {td(s.hasYoungChildren || "")}
+                  {td(s.dewormed || "")}
+                  {td(s.parentConsentMilk || "")}
+                  {td(s.fourPs || "")}
+                  {td(s.sbfpPreviousYears || "")}
+                  <td className="px-2 py-2" style={{ whiteSpace: "nowrap" }}>
+                    <div className="flex items-center gap-2 justify-center">
+                      {s.period ? (
+                        <Pill
+                          text={s.period}
+                          tone={s.period === "Baseline" ? "navy" : s.period === "Midline" ? "warn" : "good"}
+                        />
+                      ) : null}
+                      <span className="row-actions flex items-center gap-1.5">
+                        <button
+                          aria-label={`Edit ${s.name || "this learner"}'s record`}
+                          onClick={() => onEdit(s)}
+                          className="text-[11px] px-2.5 py-1 rounded-sm cursor-pointer border transition-colors"
+                          style={{ background: C.surface2, color: C.sub, borderColor: C.border }}
+                          onMouseEnter={e => { e.currentTarget.style.color = C.text; e.currentTarget.style.borderColor = C.dim; }}
+                          onMouseLeave={e => { e.currentTarget.style.color = C.sub; e.currentTarget.style.borderColor = C.border; }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          aria-label={`Delete ${s.name || "this learner"}'s record`}
+                          onClick={() => setPendingDelete(s)}
+                          className="text-[11px] px-2.5 py-1 rounded-sm cursor-pointer border transition-colors"
+                          style={{ background: "transparent", color: C.danger, borderColor: C.danger + "55" }}
+                          onMouseEnter={e => { e.currentTarget.style.background = C.danger; e.currentTarget.style.color = "#fff"; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.danger; }}
+                        >
+                          Delete
+                        </button>
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {visible.length === 0 && (
+              <tr>
+                <td colSpan={20} className="px-4 py-10 text-center text-sm" style={{ color: C.dim }}>
+                  {mine.length === 0
+                    ? "No learner records yet — use Add Student to encode the first one."
+                    : "No record matches those filters."}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
       <ConfirmDialog
         open={pendingDelete !== null}
@@ -1413,10 +1728,61 @@ function MyRecords({
           {pendingDelete?.period ? ` · ${pendingDelete.period}` : ""}
         </strong>
         <br />
-        The measurements, nutritional status and beneficiary details on this record are deleted from {school.name}'s
-        records and from the division's records server. <strong style={{ color: C.text }}>This cannot be undone</strong> —
-        to keep the learner on file, choose “Keep record” instead.
+        The record leaves {school.name}'s active list and moves to Trash, with its measurements intact. It stays
+        recoverable until the Division Office opens the next school year, when the trash is emptied permanently.
       </ConfirmDialog>
+    </div>
+  );
+}
+
+// ── Trash ─────────────────────────────────────────────────────────────────────
+
+function TrashScreen({ school }: { school: School }) {
+  const store = useTeacherStore();
+  const mine = useMemo(
+    () => store.trash.filter(r => r.schoolId === school.id),
+    [store.trash, school.id],
+  );
+
+  return (
+    <div className="flex flex-col gap-5">
+      <Card
+        title="Trash"
+        subtitle={`${mine.length} deleted record${mine.length === 1 ? "" : "s"} · ${school.name}`}
+      >
+        <p style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.65, maxWidth: 760 }}>
+          Deleted learner records stay here during the current school year, with their measurements intact, so a
+          mistake can be undone. When the Division Office opens the next school year, everything in the trash is
+          deleted permanently.
+        </p>
+      </Card>
+
+      {mine.length === 0 ? (
+        <Card>
+          <p style={{ fontSize: 13.5, color: C.sub }}>The trash is empty.</p>
+        </Card>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {mine.map(r => (
+            <div
+              key={r.id}
+              className="flex flex-col md:flex-row md:items-center gap-3"
+              style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", background: C.surface }}
+            >
+              <div className="min-w-0 flex-1">
+                <div style={{ fontSize: 14, fontWeight: 500, color: C.text }}>
+                  {r.name || "Unnamed learner"}
+                </div>
+                <div style={{ fontSize: 11.5, color: C.dim, marginTop: 5 }}>
+                  {r.gradeLevel || "Grade not set"} · {r.period} · SY {formatSchoolYear(r.sy)}
+                  {r.deletedAt ? ` · deleted ${shortDate(r.deletedAt)}` : ""}
+                </div>
+              </div>
+              <Button small tone="ghost" onClick={() => restoreRecord(r.id)}>Restore</Button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1561,13 +1927,16 @@ function FeedbackScreen({ profile, school }: { profile: TeacherProfile; school: 
 
 // ── Summary Table — the school's SBFP numbers, and Form 2 ──────────────────
 
-/** Status colours that stay readable on paper (the district's day-mode tones). */
-const BMI_COLOR: Record<string, string> = {
-  "Severely Wasted": "#b3261e", Wasted: "#a2580a", Normal: "#1c7a4a", Overweight: "#8a6a00", Obese: "#b3316a",
-};
-const HFA_COLOR: Record<string, string> = {
-  "Severely Stunted": "#b3261e", Stunted: "#a2580a", Normal: "#1c7a4a", Tall: "#0f6f91",
-};
+/** Every figure for one grade/sex row, computed once in a single pass. */
+interface Tally {
+  bmi: number[];
+  hfa: number[];
+  learners: number;
+  fourPs: number;
+  sbfp: number;
+  dewormed: number;
+  pregnantYoung: number;
+}
 
 function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void }) {
   const store = useTeacherStore();
@@ -1592,28 +1961,82 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
 
   const mine = useMemo(() => store.records.filter(r => r.schoolId === school.id), [store.records, school.id]);
   const period: Period = chosenPeriod ?? PERIODS.find(p => mine.some(r => r.period === p)) ?? "Baseline";
-  const shown = mine.filter(s =>
-    s.period === period &&
-    (!isSpedSchool || cohort === "All" ? true : cohort === "SPED" ? isSpedGrade(s.gradeLevel) : !isSpedGrade(s.gradeLevel)),
+  const { extras, setExtra } = useForm2Extras(school.id, period);
+  /**
+   * Only this period's records. The cohort filter has to be parenthesised:
+   * `&&` binds tighter than `?:`, so without the parentheses the whole filter
+   * became `(period matches && not a SPED school) ? keep : (grade test)` — and
+   * a regular school's grade test passes, so the table silently counted every
+   * period at once and the Baseline/Midline/Endline tabs showed the same
+   * inflated figures.
+   */
+  const shown = useMemo(
+    () => mine.filter(s =>
+      s.period === period &&
+      (!isSpedSchool || cohort === "All"
+        ? true
+        : cohort === "SPED" ? isSpedGrade(s.gradeLevel) : !isSpedGrade(s.gradeLevel)),
+    ),
+    [mine, period, isSpedSchool, cohort],
   );
   const perPeriod = PERIODS.map(p => ({ p, n: mine.filter(r => r.period === p).length }));
 
+  /**
+   * A record can carry no stored WHO status (an older record, or one whose
+   * status was cleared). Classify it from its own measurements here, so the
+   * table never counts a weighed learner in the learner total but in none of
+   * the status columns.
+   */
+  const rows = useMemo(
+    () => shown.map(s => ({
+      ...s,
+      bmiStatus: s.bmiStatus || classifyBMI(
+        s.bmi || calcBMI(s.weight, s.height),
+        s.ageYears || computeAge(s.dateOfBirth).years,
+        s.sex,
+      ),
+      hfaStatus: s.hfaStatus || classifyHFA(
+        s.height,
+        s.ageYears || computeAge(s.dateOfBirth).years,
+        s.sex,
+      ),
+    })),
+    [shown],
+  );
+
   /** A learner's grade belongs in this row — merged rows also take the SPED grade. */
   const inGrade = (g: string, grade: GradeLevel) => (mergeSped ? g.replace(/^SPED /, "") === grade : g === grade);
-  const cntBMI = (grade: GradeLevel | null, sex: Sex | null, st: BMIStatus) =>
-    shown.filter(s => (grade === null || inGrade(s.gradeLevel, grade)) && (sex === null || s.sex === sex) && s.bmiStatus === st).length;
-  const cntHFA = (grade: GradeLevel | null, sex: Sex | null, st: HFAStatus) =>
-    shown.filter(s => (grade === null || inGrade(s.gradeLevel, grade)) && (sex === null || s.sex === sex) && s.hfaStatus === st).length;
-  const cntFlag = (grade: GradeLevel | null, sex: Sex | null, field: keyof Student, val: string) =>
-    shown.filter(s => (grade === null || inGrade(s.gradeLevel, grade)) && (sex === null || s.sex === sex) && s[field] === val).length;
-  const cntYoung = (grade: GradeLevel | null, sex: Sex | null) =>
-    shown.filter(s =>
-      (grade === null || inGrade(s.gradeLevel, grade)) && (sex === null || s.sex === sex) &&
-      (s.pregnant === "Yes" || s.hasYoungChildren === "Yes"),
-    ).length;
+
+  /**
+   * Every figure for one grade/sex row, in a single pass over this period.
+   * The previous version ran a separate `.filter` per cell — a few hundred
+   * passes over the same records every render, which is what made opening the
+   * table feel slow on a school with many records.
+   */
+  const tally = (grade: GradeLevel | null, sex: Sex | null): Tally => {
+    const out: Tally = {
+      bmi: BMI_STATUSES.map(() => 0), hfa: HFA_STATUSES.map(() => 0), learners: 0,
+      fourPs: 0, sbfp: 0, dewormed: 0, pregnantYoung: 0,
+    };
+    for (const s of rows) {
+      if (sex !== null && s.sex !== sex) continue;
+      if (grade !== null && !inGrade(s.gradeLevel, grade)) continue;
+      out.learners += 1;
+      const b = BMI_STATUSES.indexOf(s.bmiStatus);
+      if (b >= 0) out.bmi[b] += 1;
+      const h = HFA_STATUSES.indexOf(s.hfaStatus);
+      if (h >= 0) out.hfa[h] += 1;
+      if (s.fourPs === "Yes") out.fourPs += 1;
+      if (s.sbfpPreviousYears === "Yes") out.sbfp += 1;
+      if (s.dewormed === "Yes") out.dewormed += 1;
+      if (countsAsPregnantOrYoung(s)) out.pregnantYoung += 1;
+    }
+    return out;
+  };
   const sx = (lbl: "M" | "F" | "Total"): Sex | null => (lbl === "Total" ? null : lbl);
-  const bmiColor = (st: string) => BMI_COLOR[st] ?? C.text;
-  const hfaColor = (st: string) => HFA_COLOR[st] ?? C.text;
+  /** Learners counted in the table but still missing one of the two WHO classes. */
+  const unclassified = rows.filter(s => !s.bmiStatus || !s.hfaStatus).length;
+  const overall = tally(null, null);
 
   /**
    * The rows below, flattened for the Form 2 export — built from the same
@@ -1622,20 +2045,24 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
   const summaryMatrix = (): SummaryMatrixRow[] => {
     const perGrade = (grade: GradeLevel | null, text: string): SummaryMatrixRow[] =>
       (["M", "F", "Total"] as const).map(lbl => {
-        const s = sx(lbl);
+        const t = tally(grade, sx(lbl));
         return {
           grade: text,
           sex: lbl,
-          bmi: BMI_STATUSES.map(st => cntBMI(grade, s, st)),
-          hfa: HFA_STATUSES.map(st => cntHFA(grade, s, st)),
-          pregnantYoung: cntYoung(grade, s),
-          dewormed: cntFlag(grade, s, "dewormed", "Yes"),
-          fourPs: cntFlag(grade, s, "fourPs", "Yes"),
-          sbfp: cntFlag(grade, s, "sbfpPreviousYears", "Yes"),
+          bmi: t.bmi,
+          hfa: t.hfa,
+          pregnantYoung: t.pregnantYoung,
+          dewormed: t.dewormed,
+          fourPs: t.fourPs,
+          sbfp: t.sbfp,
+          atRisk: manualTotal(extras, grades, grade, lbl, "atRisk"),
+          ips: manualTotal(extras, grades, grade, lbl, "ips"),
         };
       });
     return [...grades.flatMap(g => perGrade(g, g)), ...perGrade(null, "GRAND TOTAL")];
   };
+  /** The same matrix the screen shows and the .xlsx prints. */
+  const summaryRows = summaryMatrix();
 
   /** The school year most of these records use — what the printed form carries. */
   const syForExport = () => {
@@ -1657,22 +2084,16 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
         sy: syForExport(),
         bmiStatuses: BMI_STATUSES,
         hfaStatuses: HFA_STATUSES,
-        rows: summaryMatrix(),
+        rows: summaryRows,
       });
     } finally {
       setExporting(false);
     }
   };
 
-  const males = shown.filter(s => s.sex === "M").length;
-  const wasted = cntBMI(null, null, "Severely Wasted") + cntBMI(null, null, "Wasted");
-  const stunted = cntHFA(null, null, "Severely Stunted") + cntHFA(null, null, "Stunted");
-
-  const num = (key: string, v: number, color?: string) => (
-    <td key={key} className="px-2 py-2 text-center" style={{ fontFamily: mono, fontSize: 12, color: v === 0 ? C.border2 : (color ?? C.text) }}>
-      {v}
-    </td>
-  );
+  const males = tally(null, "M").learners;
+  const wasted = overall.bmi[0] + overall.bmi[1];
+  const stunted = overall.hfa[0] + overall.hfa[1];
 
   if (mine.length === 0) {
     return (
@@ -1692,7 +2113,7 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
     <div className="flex flex-col gap-5">
       <Card
         title="Summary Table"
-        subtitle={`${school.name} · ${period}${isSpedSchool && cohort !== "All" ? ` · ${cohort} only` : ""}`}
+        subtitle={`${school.name} · ${period} · SY ${formatSchoolYear(store.activeSy)}${isSpedSchool && cohort !== "All" ? ` · ${cohort} only` : ""}`}
         action={
           <div className="flex items-center gap-2 flex-wrap">
             {isSpedSchool && (["All", "Regular", "SPED"] as const).map(c => (
@@ -1752,90 +2173,33 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
       ) : (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Stat text={`${period} learners`} value={shown.length} hint={`${males} M · ${shown.length - males} F`} accent />
+            <Stat text={`${period} learners`} value={overall.learners} hint={`${males} M · ${overall.learners - males} F`} accent />
             <Stat text="Wasted" value={wasted} hint="severely wasted + wasted" />
             <Stat text="Stunted" value={stunted} hint="severely stunted + stunted" />
-            <Stat text="Dewormed" value={cntFlag(null, null, "dewormed", "Yes")} hint={`4P's: ${cntFlag(null, null, "fourPs", "Yes")}`} />
+            <Stat text="Dewormed" value={overall.dewormed} hint={`4P's: ${overall.fourPs}`} />
           </div>
 
-          <div style={{ border: `1px solid ${C.border}`, borderRadius: C.radius, overflow: "hidden", background: C.surface }}>
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse" style={{ minWidth: 900, fontSize: 12 }}>
-                <thead>
-                  <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                    <th rowSpan={2} className="px-3 py-2 text-left" style={{ ...label, marginBottom: 0, borderRight: `1px solid ${C.border}` }}>Grade</th>
-                    <th rowSpan={2} className="px-2 py-2 text-center" style={{ ...label, marginBottom: 0, borderRight: `1px solid ${C.border}` }}>Sex</th>
-                    <th colSpan={6} className="px-2 py-2 text-center" style={{ ...label, marginBottom: 0, color: C.navy, borderRight: `1px solid ${C.border}` }}>Body Mass Index (BMI)</th>
-                    <th colSpan={5} className="px-2 py-2 text-center" style={{ ...label, marginBottom: 0, color: C.good, borderRight: `1px solid ${C.border}` }}>Height-for-Age (HFA)</th>
-                    <th className="px-2 py-2 text-center" style={{ ...label, marginBottom: 0, color: C.gold, borderRight: `1px solid ${C.border}` }}>4P's</th>
-                    <th className="px-2 py-2 text-center" style={{ ...label, marginBottom: 0, color: C.gold }}>SBFP</th>
-                  </tr>
-                  <tr style={{ borderBottom: `1px solid ${C.border}`, background: C.surface2 }}>
-                    {["Sev. Wasted", "Wasted", "Normal", "Overweight", "Obese", "Total", "Sev. Stunted", "Stunted", "Normal", "Tall", "Total"].map((h, i) => (
-                      <th key={`${h}${i}`} className="px-2 py-1.5 text-center"
-                        style={{ fontSize: 8, letterSpacing: "0.1em", textTransform: "uppercase", color: C.dim, borderRight: `1px solid ${i === 5 || i === 10 ? C.border : C.surface2}` }}>
-                        {h}
-                      </th>
-                    ))}
-                    <th style={{ borderRight: `1px solid ${C.border}` }} />
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {grades.map(grade =>
-                    (["M", "F", "Total"] as const).map((lbl, ri) => {
-                      const s = sx(lbl);
-                      const bmis = BMI_STATUSES.map(st => ({ st, n: cntBMI(grade, s, st) }));
-                      const hfas = HFA_STATUSES.map(st => ({ st, n: cntHFA(grade, s, st) }));
-                      const bT = bmis.reduce((a, b) => a + b.n, 0);
-                      const hT = hfas.reduce((a, b) => a + b.n, 0);
-                      const isTotal = lbl === "Total";
-                      return (
-                        <tr key={`${grade}-${ri}`} style={{ borderBottom: `1px solid ${isTotal ? C.border : C.surface2}`, background: isTotal ? C.surface2 : C.surface }}>
-                          {ri === 0 && (
-                            <td rowSpan={3} className="px-3 py-2 align-middle" style={{ fontSize: 12.5, fontWeight: 500, color: C.text, borderRight: `1px solid ${C.border}` }}>
-                              {grade}
-                            </td>
-                          )}
-                          <td className="px-2 py-2 text-center" style={{ fontFamily: mono, fontSize: 12, fontWeight: isTotal ? 600 : 400, color: isTotal ? C.navy : C.sub, borderRight: `1px solid ${C.border}` }}>{lbl}</td>
-                          {bmis.map(b => num(`b-${b.st}`, b.n, isTotal ? undefined : bmiColor(b.st)))}
-                          {num("b-total", bT, C.navy)}
-                          {hfas.map(h => num(`h-${h.st}`, h.n, isTotal ? undefined : hfaColor(h.st)))}
-                          {num("h-total", hT, C.good)}
-                          {num("4ps", cntFlag(grade, s, "fourPs", "Yes"), C.gold)}
-                          {num("sbfp", cntFlag(grade, s, "sbfpPreviousYears", "Yes"), C.gold)}
-                        </tr>
-                      );
-                    }),
-                  )}
-                  {(["M", "F", "Total"] as const).map(lbl => {
-                    const s = sx(lbl);
-                    const bmis = BMI_STATUSES.map(st => ({ st, n: cntBMI(null, s, st) }));
-                    const hfas = HFA_STATUSES.map(st => ({ st, n: cntHFA(null, s, st) }));
-                    return (
-                      <tr key={`grand-${lbl}`} style={{ background: C.navySoft, borderTop: `1px solid ${C.navy}` }}>
-                        {lbl === "M" && (
-                          <td rowSpan={3} className="px-3 py-2 align-middle" style={{ fontSize: 12, fontWeight: 700, color: C.navy, borderRight: `1px solid ${C.border}` }}>GRAND TOTAL</td>
-                        )}
-                        <td className="px-2 py-2 text-center" style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: C.navy, borderRight: `1px solid ${C.border}` }}>{lbl}</td>
-                        {bmis.map(b => num(`gb-${b.st}`, b.n, C.navy))}
-                        {num("gb-total", bmis.reduce((a, b) => a + b.n, 0), C.navy)}
-                        {hfas.map(h => num(`gh-${h.st}`, h.n, C.good))}
-                        {num("gh-total", hfas.reduce((a, b) => a + b.n, 0), C.good)}
-                        {num("g4ps", cntFlag(null, s, "fourPs", "Yes"), C.gold)}
-                        {num("gsbfp", cntFlag(null, s, "sbfpPreviousYears", "Yes"), C.gold)}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <Form2Sheet
+            school={school}
+            period={period}
+            cohort={isSpedSchool ? cohort : "All"}
+            sy={store.activeSy}
+            rows={summaryRows}
+            onExtraChange={(grade, sex, patch) => setExtra(grade, sex, patch)}
+          />
+
+          {unclassified > 0 && (
+            <p style={{ fontSize: 12, color: C.warn, marginTop: -6 }}>
+              {unclassified} learner{unclassified === 1 ? "" : "s"} in this period {unclassified === 1 ? "has" : "have"} no
+              BMI or height-for-age classification yet — open the record and complete the measurements. The status columns
+              count classified learners only.
+            </p>
+          )}
 
           <Card>
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <p style={{ fontSize: 12.5, color: C.sub, maxWidth: 640, lineHeight: 1.6 }}>
-                This table covers the {mine.length} learner record{mine.length === 1 ? "" : "s"} this school has encoded
+                This table covers the {shown.length} {period} record{shown.length === 1 ? "" : "s"} this school has encoded
                 from the portal. The district office keeps the school's full master list in its own Summary Table, and both
                 use the same per-grade, per-sex figures and the same Form 2 layout — so what you export here is the same
                 printed form, filled from the school's own encoding.
@@ -1860,6 +2224,20 @@ export default function TeacherApp() {
   const [tab, setTab] = useState<Tab>("overview");
   const [editing, setEditing] = useState<Student | null>(null);
 
+  // The workbook engine (ExcelJS) is a ~900 KB chunk that only an export needs.
+  // Warm it once a teacher is signed in — not for every visitor on the sign-in
+  // screen — so the first Form 1/2 export builds straight away.
+  useEffect(() => {
+    if (typeof window === "undefined" || access.status !== "teacher") return;
+    const warm = () => void import("@/lib/sbfp-export");
+    if ("requestIdleCallback" in window) {
+      const id = window.requestIdleCallback(warm, { timeout: 3000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = globalThis.setTimeout(warm, 2000);
+    return () => globalThis.clearTimeout(id);
+  }, [access.status]);
+
   // Signing in always opens on the Overview rather than wherever the last
   // teacher left the tab.
   const activeSchoolId = store.activeSchoolId;
@@ -1873,7 +2251,9 @@ export default function TeacherApp() {
   // what this site shows — and what the Form 2 export prints on the form.
   const school = useMemo(() => {
     if (!profile) return null;
-    const base = SCHOOL_BY_ID.get(profile.schoolId);
+    // The school row comes from the database (see migrations/0005) — the
+    // portal reads the same list the Division Office sees.
+    const base = store.schools.find(s => s.id === profile.schoolId);
     if (!base) return null;
     return {
       ...base,
@@ -1885,23 +2265,27 @@ export default function TeacherApp() {
       dateStartFeeding: profile.dateStartFeeding,
       lastMileSchool: profile.lastMileSchool,
     };
-  }, [profile]);
+  }, [profile, store.schools]);
 
   const signedIn = access.status === "teacher" && Boolean(school && profile);
 
-  if (access.status === "loading") return <Boot />;
+  // No loading screen: the sign-in form below is the first paint. A teacher who
+  // is already signed in is swapped to her portal as soon as the session and
+  // workspace arrive; a signed-out visitor can start typing immediately.
   if (access.status === "disabled") return <AccountOnHold access={access} />;
 
   return (
     <div style={{ minHeight: "100dvh", background: C.bg, color: C.text, fontFamily: font }}>
       <header className="app-topbar" style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, position: "sticky", top: 0, zIndex: 10 }}>
-        <div className="mx-auto px-5" style={{ maxWidth: 1080 }}>
+        <div className="mx-auto px-5" style={{ maxWidth: tab === "summary" || tab === "records" ? 1520 : 1080 }}>
           <div className="flex items-center gap-3 py-3 flex-wrap">
             <a href="/teacher" className="flex items-center gap-3" style={{ textDecoration: "none" }}>
               <img src="/school-health-wheel.svg" alt="" width={36} height={36} />
               <span>
                 <span style={{ display: "block", fontSize: 15, fontWeight: 600, color: C.text }}>SBFP Teacher Portal</span>
-                <span style={{ display: "block", fontSize: 11, color: C.dim }}>Urdaneta City Schools Division</span>
+                <span style={{ display: "block", fontSize: 11, color: C.dim }}>
+                  Urdaneta City Schools Division · SY {formatSchoolYear(store.activeSy)}
+                </span>
               </span>
             </a>
             <div className="flex items-center gap-3 ml-auto" style={{ color: C.sub }}>
@@ -1982,7 +2366,7 @@ export default function TeacherApp() {
           </Card>
         </div>
       ) : (
-        <main className="mx-auto px-5 py-6" style={{ maxWidth: 1080 }}>
+        <main className="mx-auto px-5 py-6" style={{ maxWidth: tab === "summary" || tab === "records" ? 1520 : 1080 }}>
           {tab === "overview" && <Overview profile={profile} school={school} go={setTab} />}
           {tab === "profile" && <ProfileScreen profile={profile} school={school} />}
           {tab === "entry" && (
@@ -2002,6 +2386,7 @@ export default function TeacherApp() {
           )}
           {tab === "summary" && <SummaryTable school={school} onEntry={() => { setEditing(null); setTab("entry"); }} />}
           {tab === "feedback" && <FeedbackScreen profile={profile} school={school} />}
+          {tab === "trash" && <TrashScreen school={school} />}
 
           <footer className="flex items-center justify-between gap-3 flex-wrap" style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.border}`, fontSize: 11.5, color: C.dim }}>
             <span>

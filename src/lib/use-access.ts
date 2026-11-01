@@ -12,10 +12,16 @@
  * `syncWorkspace()` is driven from this hook, so the two sites cannot end up
  * reading the workspace for different identities.
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import type { AppUser } from "@/lib/auth/use-current-user";
-import { resetWorkspace, syncWorkspace, useTeacherStore } from "./sbfp-store";
+import {
+  resetWorkspace,
+  syncWorkspace,
+  teacherStoreSnapshot,
+  useTeacherStore,
+} from "./sbfp-store";
+import { watchWorkspace } from "./sbfp-live";
 import type { SbfpAccount, TeacherStoreState } from "./sbfp-store";
 
 export type AccessStatus =
@@ -46,6 +52,22 @@ export function useAccess(): Access {
   const { user, isPending } = useCurrentUserState();
   const store = useTeacherStore();
   const email = user?.primaryEmail?.toLowerCase() ?? null;
+  /** The boot read finished — its answer already names the visitor. */
+  const [bootRead, setBootRead] = useState(false);
+
+  // Ask for the workspace immediately instead of waiting for `useSession()`.
+  // The workspace request verifies the same session on the server, so the
+  // separate get-session round trip is no longer on the critical path: the page
+  // opens on the workspace's answer, and the session hook only confirms it.
+  useEffect(() => {
+    let live = true;
+    void syncWorkspace().finally(() => {
+      if (live) setBootRead(true);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (isPending) return;
@@ -56,25 +78,49 @@ export function useAccess(): Access {
     void syncWorkspace(email);
   }, [isPending, email]);
 
-  // The workspace counts as loaded for this identity once a read has been
-  // *attempted* for it, so a failed read lands on a real state (with
-  // `store.syncError` explaining it) instead of spinning forever.
-  const loaded = store.hydrated && store.email === email;
-  const account = store.account;
+  // Stay live: a record saved by a school reaches the Division Office, and a
+  // reply reaches the school, without either side reloading. The watcher polls
+  // a tiny change signature and only re-reads the workspace when it differs.
+  useEffect(() => {
+    if (isPending || !email) return;
+    return watchWorkspace(
+      () => teacherStoreSnapshot().version,
+      () => syncWorkspace(email, true),
+    );
+  }, [isPending, email]);
 
-  const status: AccessStatus = isPending
+  // The workspace counts as loaded once a read has *attempted* the identity, so
+  // a failed read lands on a real state (with `store.syncError` explaining it)
+  // instead of spinning forever. While the session hook is still pending, the
+  // boot read's answer is authoritative — it authenticated that same session.
+  //
+  // A resolved signed-out session needs no workspace at all: show the sign-in
+  // page as soon as it lands, instead of waiting for the boot read's 401.
+  const signedOut = !isPending && !email;
+  // A first read for a newly signed-in identity must not briefly report "no
+  // account" before the workspace arrives: `syncing` with no account yet is
+  // still loading. A refresh of an already-loaded account keeps its status.
+  const awaitingFirstRead = store.syncing && store.account === null;
+  const loaded =
+    signedOut ||
+    (store.hydrated &&
+      !awaitingFirstRead &&
+      (isPending ? bootRead : store.email === email));
+  const account = store.account;
+  /** Whose answer this render is based on — the boot read while pending. */
+  const identityEmail = isPending ? store.email : email;
+
+  const status: AccessStatus = !loaded
     ? "loading"
-    : !email
+    : !identityEmail
       ? "signed-out"
-      : !loaded
-        ? "loading"
-        : !account
-          ? "no-account"
-          : account.status !== "active"
-            ? "disabled"
-            : account.role === "admin"
-              ? "admin"
-              : "teacher";
+      : !account
+        ? "no-account"
+        : account.status !== "active"
+          ? "disabled"
+          : account.role === "admin"
+            ? "admin"
+            : "teacher";
 
   return {
     status,
@@ -82,7 +128,7 @@ export function useAccess(): Access {
     email,
     account,
     store,
-    reload: () => void syncWorkspace(email, true),
+    reload: () => void syncWorkspace(email ?? store.email, true),
     forget: resetWorkspace,
   };
 }

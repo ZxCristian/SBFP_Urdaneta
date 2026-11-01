@@ -6,46 +6,25 @@
  * page, and a teacher is sent to her own site instead of being shown a console
  * she has no account for.
  *
- * The session is reported as `loading` until it has actually resolved, so a
- * reload never bounces a signed-in administrator to the sign-in page.
+ * The sign-in form is the FIRST paint. This route renders the sign-in screen
+ * itself while the session and workspace are read, so the form is already in
+ * the server's HTML response instead of a blank shell waiting for the client
+ * bundle to redirect. Once the session resolves, an administrator's console
+ * takes over, and a teacher is sent to her own site. That trades a brief
+ * sign-in flash on a signed-in reload for never making a signed-out visitor
+ * wait behind a loading screen.
  */
 import { createFileRoute, Navigate } from "@tanstack/react-router";
 import SbfpApp from "@/sbfp-app";
 import { useAccess } from "@/lib/use-access";
+import { LoginScreen } from "./login";
 
 export const Route = createFileRoute("/")({ component: Home });
 
 function Home() {
   const access = useAccess();
 
-  if (access.status === "loading") return <ConsoleSplash />;
   if (access.status === "admin") return <SbfpApp />;
   if (access.status === "teacher") return <Navigate to="/teacher" />;
-  return <Navigate to="/login" />;
-}
-
-function ConsoleSplash() {
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#080808",
-        color: "#6a6a6a",
-        fontFamily: "'Outfit', system-ui, sans-serif",
-        display: "grid",
-        placeItems: "center",
-      }}
-    >
-      <div className="text-center">
-        <img
-          src="/school-health-wheel.svg"
-          alt=""
-          width={40}
-          height={40}
-          style={{ margin: "0 auto", opacity: 0.45 }}
-        />
-        <p style={{ fontSize: 13, marginTop: 14 }}>Opening the Division Console…</p>
-      </div>
-    </div>
-  );
+  return <LoginScreen access={access} />;
 }

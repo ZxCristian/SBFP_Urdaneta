@@ -34,10 +34,18 @@ import {
 import type {
   FeedbackCategory,
   FeedbackStatus,
+  School,
   SchoolFeedback,
   SchoolFormDetails,
   Student,
+  SummaryExtra,
+  TrashedRecord,
 } from "@/lib/sbfp-shared";
+import { listSchools } from "./sbfp-schools.ts";
+import { getActiveSchoolYear, SchoolYearError } from "./sbfp-years.ts";
+import type { ArchivedSchoolYear } from "./sbfp-years.ts";
+import { learnerProblem } from "./sbfp-validation.ts";
+import { mustNotBePregnant } from "./sbfp-domain.ts";
 
 export type AccountRole = "admin" | "teacher";
 export type AccountStatus = "active" | "disabled";
@@ -71,6 +79,8 @@ export type AccountErrorCode =
   | "not_found"
   | "last_admin"
   | "reset_token_invalid"
+  | "incomplete_profile"
+  | "invalid_record"
   | "forbidden";
 
 /** A refusal the UI can explain. Never carries SQL or a stack. */
@@ -215,8 +225,15 @@ const ACCOUNT_SELECT = `
          a.status, a.temp_password, a.created_at, a.updated_at,
          p.division, p.city_municipality_barangay, p.school_id_number,
          p.principal, p.focal_person, p.date_start_feeding, p.last_mile_school,
-         (select count(*) from sbfp_records r where r.school_id = a.school_id) as record_count,
-         (select count(*) from sbfp_feedback f where f.school_id = a.school_id) as feedback_count
+         (select count(*) from sbfp_records r
+            where r.school_id = a.school_id
+              and r.deleted_at is null
+              and r.sy = (select sy from sbfp_school_years where closed_at is null limit 1)
+         ) as record_count,
+         (select count(*) from sbfp_feedback f
+            where f.school_id = a.school_id
+              and f.sy = (select sy from sbfp_school_years where closed_at is null limit 1)
+         ) as feedback_count
   from sbfp_accounts a
   left join sbfp_school_profiles p on p.school_id = a.school_id
 `;
@@ -235,10 +252,26 @@ export async function findAccountByEmail(
   return rows[0] ? toAccount(rows[0]) : null;
 }
 
-/** Every account, newest first — the Division Office's accounts panel. */
-export async function listAccounts(sql: Sql): Promise<AccountListRow[]> {
+/**
+ * Every account, newest first — the Division Office's accounts panel.
+ *
+ * `only` narrows the read to those school ids. The teacher portal only ever
+ * shows one school, so without it every workspace load counted records and
+ * feedback for all 58 accounts just to throw 57 away.
+ */
+export async function listAccounts(
+  sql: Sql,
+  options: { only?: string[] } = {},
+): Promise<AccountListRow[]> {
+  const where =
+    options.only === undefined
+      ? ""
+      : options.only.length === 0
+        ? " where false"
+        : ` where a.school_id in (${options.only.map((_, i) => `$${i + 1}`).join(", ")})`;
   const rows = await sql.query<AccountDbRow>(
-    `${ACCOUNT_SELECT} order by a.role desc, a.school_id nulls first, a.email`,
+    `${ACCOUNT_SELECT}${where} order by a.role desc, a.school_id nulls first, a.email`,
+    options.only ?? [],
   );
   return rows.map((row) => {
     const account = toAccount(row);
@@ -263,45 +296,6 @@ export async function countAdmins(sql: Sql): Promise<number> {
     select count(*) as n from sbfp_accounts where role = 'admin' and status = 'active'
   `;
   return Number(rows[0]?.n ?? 0);
-}
-
-/** The fixed Division Office sign-in the live preview is seeded with. */
-export const DEMO_ADMIN_EMAIL = "test@gmail.com";
-export const DEMO_ADMIN_PASSWORD = "qwertyuiop";
-
-/**
- * Seed the preview's Division Office sign-in.
- *
- * The preview runs on the embedded PGLite database, which lives in memory and
- * is wiped with the process — so an account created by hand through the
- * first-run setup card is gone after every restart. On a fresh preview an empty
- * `sbfp_accounts` therefore means "the door has just opened", and the fixed
- * login above is created so the console can be entered by typing two known
- * values.
- *
- * **Only the preview.** A deployed database keeps the first-run card, where the
- * Division Office chooses its own email and password. Those two values are in
- * the source, and this account can read every school's learner records and
- * issue or remove any school's sign-in — a published password for it on a public
- * site would hand the whole district's data to anyone who read the repository.
- *
- * Idempotent, and never overwrites an account that already exists: a preview
- * where the Division Office created its own account keeps it.
- */
-export async function ensureDemoAdmin(
-  sql: Sql,
-  options: { preview: boolean },
-): Promise<boolean> {
-  if (!options.preview) return false;
-  if (await hasAdminAccount(sql)) return false;
-  await createAccount(sql, {
-    email: DEMO_ADMIN_EMAIL,
-    password: DEMO_ADMIN_PASSWORD,
-    role: "admin",
-    fullName: "Division SBFP Coordinator",
-    tempPassword: false,
-  });
-  return true;
 }
 
 /**
@@ -525,6 +519,10 @@ export function needsCurrentPassword(state: {
  * Set a new password for an account (the "Reset password" action) and flag it as
  * temporary, so the portal prompts the teacher to choose her own.
  *
+ * Every existing session for the account is deleted at the same time: the old
+ * password is what those sessions were opened with, and leaving them alive would
+ * let a stolen session outlive the reset that was meant to end it.
+ *
  * The identity and the credential are created when they are missing — that is
  * what lets an account that only ever arrived through the Grok gate be given a
  * password as well.
@@ -553,6 +551,10 @@ export async function resetPassword(
     update "account" set "password" = ${hash}, "updatedAt" = now()
     where "userId" = ${userId} and "providerId" = 'credential'
   `;
+  // A password change has to end every session it was changed away from —
+  // otherwise a stolen session, or the one on an old phone, keeps working with
+  // the password that was just replaced. Sessions cascade with the identity.
+  await sql`delete from "session" where "userId" = ${userId}`;
   const hasCredential = await sql<{ id: string }>`
     select "id" from "account" where "userId" = ${userId} and "providerId" = 'credential'
   `;
@@ -772,6 +774,33 @@ export async function getSchoolProfile(
   };
 }
 
+/**
+ * The four fields the SBFP forms cannot be printed without. The portal and the
+ * console both check these before saving; this is the server's own copy of the
+ * rule, so a cleared field cannot slip through an altered request.
+ */
+export const REQUIRED_PROFILE_FIELDS: [keyof SchoolFormDetails, string][] = [
+  ["principal", "Name of Principal / School Head"],
+  ["focalPerson", "Name of Feeding Focal Person"],
+  ["schoolIdNumber", "School ID Number"],
+  ["cityMunicipalityBarangay", "City/Municipality/Barangay"],
+];
+
+/**
+ * Why this profile patch cannot be saved, or null. Only a required field the
+ * patch is actually setting is checked: a save that touches just `division` (or
+ * a legacy carry-over) must not be refused for fields it never mentioned.
+ */
+export function profileProblem(patch: Partial<SchoolFormDetails>): string | null {
+  for (const [key, label] of REQUIRED_PROFILE_FIELDS) {
+    const value = patch[key];
+    if (value !== undefined && !String(value).trim()) {
+      return `${label} is required — the SBFP forms cannot be printed without it.`;
+    }
+  }
+  return null;
+}
+
 /** Upsert the school information block (either side of the app may edit it). */
 export async function saveSchoolProfile(
   sql: Sql,
@@ -780,6 +809,8 @@ export async function saveSchoolProfile(
   updatedBy?: string,
 ): Promise<void> {
   if (!schoolId) return;
+  const problem = profileProblem(patch);
+  if (problem) throw new AccountError("incomplete_profile", problem);
   const current = await getSchoolProfile(sql, schoolId);
   const next: SchoolFormDetails = {
     division: patch.division ?? current?.division ?? "Urdaneta City",
@@ -848,6 +879,11 @@ const RECORD_COLUMNS = `
   parent_consent_milk, four_ps, sbfp_previous_years
 `;
 
+interface TrashedDbRow extends RecordDbRow {
+  deleted_at: string | Date;
+  deleted_by: string | null;
+}
+
 function toStudent(row: RecordDbRow): Student {
   return {
     id: row.id,
@@ -878,6 +914,14 @@ function toStudent(row: RecordDbRow): Student {
   };
 }
 
+function toTrashed(row: TrashedDbRow): TrashedRecord {
+  return {
+    ...toStudent(row),
+    deletedAt: isoOf(row.deleted_at),
+    deletedBy: textOf(row.deleted_by),
+  };
+}
+
 /** Add or update one learner record for `schoolId` (already authorized). */
 export async function upsertRecord(
   sql: Sql,
@@ -885,6 +929,17 @@ export async function upsertRecord(
   record: RecordInput,
   encodedBy?: string,
 ): Promise<void> {
+  // The year is the server's, not the browser's: a record typed on the last day
+  // of one school year and saved on the first day of the next belongs to the
+  // year the district is working in. This also stops an edited form from moving
+  // an archived row into the active year.
+  const problem = learnerProblem(record);
+  if (problem) throw new AccountError("invalid_record", problem);
+  // Encoding rule, enforced server-side as well as in the forms: a male learner
+  // is recorded as not pregnant. A female learner aged 10 or below defaults to
+  // "No" in the form but is not locked, so an explicit "Yes" is preserved here.
+  const pregnant = mustNotBePregnant(record.sex) ? "No" : record.pregnant;
+  const activeSy = await getActiveSchoolYear(sql);
   await sql`
     insert into sbfp_records (
       id, school_id, period, sy, name, sex, grade_level, date_of_birth, date_of_weighing,
@@ -892,11 +947,11 @@ export async function upsertRecord(
       classification_of_beneficiary, pregnant, has_young_children, dewormed,
       parent_consent_milk, four_ps, sbfp_previous_years, encoded_by, created_at, updated_at)
     values (
-      ${record.id}, ${schoolId}, ${record.period}, ${record.sy}, ${record.name}, ${record.sex},
+      ${record.id}, ${schoolId}, ${record.period}, ${activeSy}, ${record.name}, ${record.sex},
       ${record.gradeLevel}, ${record.dateOfBirth}, ${record.dateOfWeighing}, ${record.ageYears},
       ${record.ageMonths}, ${record.weight}, ${record.height}, ${record.bmi},
       ${record.bmiStatus}, ${record.hfaStatus}, ${record.nutritionalStatus},
-      ${record.classificationOfBeneficiary}, ${record.pregnant}, ${record.hasYoungChildren},
+      ${record.classificationOfBeneficiary}, ${pregnant}, ${record.hasYoungChildren},
       ${record.dewormed}, ${record.parentConsentMilk}, ${record.fourPs},
       ${record.sbfpPreviousYears}, ${encodedBy ?? null}, now(), now()
     )
@@ -925,20 +980,154 @@ export async function upsertRecord(
       sbfp_previous_years = excluded.sbfp_previous_years,
       updated_at = now()
     where sbfp_records.school_id = excluded.school_id
+      and sbfp_records.deleted_at is null
   `;
 }
 
-/** Remove one learner record. Refuses to cross schools. */
+/**
+ * The newest past school year in which this school already had a record for the
+ * learner, or null. Used by Data Entry to answer "SBFP beneficiary in previous
+ * years?" from the archive instead of asking the teacher to remember.
+ *
+ * The match is the school's own rows only, by name (case and outer-space
+ * insensitive) and, when a date of birth is supplied, by that date too — a
+ * namesake with a different birthday is not the same learner. Only the year is
+ * returned; no past-year row leaves the server.
+ */
+export async function previousBeneficiaryYear(
+  sql: Sql,
+  schoolId: string,
+  name: string,
+  dateOfBirth = "",
+): Promise<string | null> {
+  const normalized = name.trim().replace(/\s+/g, " ").slice(0, 120);
+  if (!schoolId || normalized.length < 3) return null;
+  const dob = /^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth.trim()) ? dateOfBirth.trim() : "";
+  const activeSy = await getActiveSchoolYear(sql);
+  const rows = await sql<{ sy: string }>`
+    select sy from sbfp_records
+    where school_id = ${schoolId}
+      and deleted_at is null
+      and sy <> ${activeSy}
+      and lower(trim(name)) = lower(${normalized})
+      and (${dob} = '' or date_of_birth = ${dob})
+    order by sy desc
+    limit 1
+  `;
+  return rows[0]?.sy ?? null;
+}
+
+/**
+ * Move one learner record to the trash. It stops appearing in the school's
+ * lists but is kept (with every measurement) until the next school year starts,
+ * when `startNewSchoolYear` empties the trash permanently. Refuses to cross
+ * schools: an id belonging to another school updates nothing.
+ */
 export async function deleteRecord(
+  sql: Sql,
+  id: string,
+  schoolId?: string,
+  deletedBy?: string,
+): Promise<void> {
+  if (schoolId === undefined) {
+    await sql`
+      update sbfp_records
+      set deleted_at = now(), deleted_by = ${deletedBy ?? null}, updated_at = now()
+      where id = ${id} and deleted_at is null
+    `;
+    return;
+  }
+  await sql`
+    update sbfp_records
+    set deleted_at = now(), deleted_by = ${deletedBy ?? null}, updated_at = now()
+    where id = ${id} and school_id = ${schoolId} and deleted_at is null
+  `;
+}
+
+/** Put a trashed learner record back in the school's active list. */
+export async function restoreRecord(
   sql: Sql,
   id: string,
   schoolId?: string,
 ): Promise<void> {
   if (schoolId === undefined) {
-    await sql`delete from sbfp_records where id = ${id}`;
+    await sql`
+      update sbfp_records set deleted_at = null, deleted_by = null, updated_at = now()
+      where id = ${id} and deleted_at is not null
+    `;
     return;
   }
-  await sql`delete from sbfp_records where id = ${id} and school_id = ${schoolId}`;
+  await sql`
+    update sbfp_records set deleted_at = null, deleted_by = null, updated_at = now()
+    where id = ${id} and school_id = ${schoolId} and deleted_at is not null
+  `;
+}
+
+// ── Form 2 manual figures ──────────────────────────────────────────────────────
+
+interface SummaryExtraDbRow {
+  school_id: string;
+  sy: string;
+  period: string;
+  grade: string;
+  sex: string;
+  at_risk: number | string;
+  ips: number | string;
+}
+
+function toSummaryExtra(row: SummaryExtraDbRow): SummaryExtra {
+  return {
+    schoolId: row.school_id,
+    sy: row.sy,
+    period: row.period as SummaryExtra["period"],
+    grade: row.grade,
+    sex: row.sex === "M" ? "M" : "F",
+    atRisk: Number(row.at_risk ?? 0),
+    ips: Number(row.ips ?? 0),
+  };
+}
+
+/**
+ * Save the two hand-encoded Form 2 columns for one grade/sex row. The school
+ * year is the server's active one, so an edited form cannot write into a closed
+ * year. Values are whole non-negative counts, capped so a typo cannot overflow
+ * the printed form.
+ */
+export async function saveSummaryExtra(
+  sql: Sql,
+  schoolId: string,
+  input: { period: string; grade: string; sex: string; atRisk: number; ips: number },
+  updatedBy?: string,
+): Promise<void> {
+  const period = input.period;
+  if (period !== "Baseline" && period !== "Midline" && period !== "Endline") {
+    throw new AccountError("invalid_record", "Unknown feeding period.");
+  }
+  const grade = input.grade.trim().slice(0, 80);
+  if (!grade) throw new AccountError("invalid_record", "A grade level is required.");
+  if (input.sex !== "M" && input.sex !== "F") {
+    throw new AccountError("invalid_record", "A grade/sex row is required.");
+  }
+  const count = (value: number) => {
+    const n = Math.trunc(Number(value));
+    if (!Number.isFinite(n) || n < 0 || n > 9999) {
+      throw new AccountError("invalid_record", "These counts must be whole numbers from 0 to 9999.");
+    }
+    return n;
+  };
+  const atRisk = count(input.atRisk);
+  const ips = count(input.ips);
+  const activeSy = await getActiveSchoolYear(sql);
+  await sql`
+    insert into sbfp_summary_extras
+      (school_id, sy, period, grade, sex, at_risk, ips, updated_at, updated_by)
+    values (${schoolId}, ${activeSy}, ${period}, ${grade}, ${input.sex}, ${atRisk}, ${ips}, now(), ${updatedBy ?? null})
+    on conflict (school_id, sy, period, grade, sex) do update set
+      at_risk = excluded.at_risk,
+      ips = excluded.ips,
+      updated_at = now(),
+      updated_by = excluded.updated_by
+  `;
 }
 
 // ── Feedback ──────────────────────────────────────────────────────────────────
@@ -980,11 +1169,12 @@ export async function insertFeedback(
   entry: Omit<SchoolFeedback, "schoolId">,
   sentBy?: string,
 ): Promise<void> {
+  const activeSy = await getActiveSchoolYear(sql);
   await sql`
     insert into sbfp_feedback
-      (id, school_id, author, role, category, rating, message, created_at, status, response, origin, sent_by, updated_at)
+      (id, school_id, sy, author, role, category, rating, message, created_at, status, response, origin, sent_by, updated_at)
     values (
-      ${entry.id}, ${schoolId}, ${entry.author}, ${entry.role}, ${entry.category},
+      ${entry.id}, ${schoolId}, ${activeSy}, ${entry.author}, ${entry.role}, ${entry.category},
       ${entry.rating}, ${entry.message}, ${entry.createdAt}, ${entry.status},
       ${entry.response ?? ""}, ${entry.origin ?? null}, ${sentBy ?? null}, now()
     )
@@ -1016,48 +1206,239 @@ export async function updateFeedback(
 
 /** Everything a signed-in caller may read, in one round trip. */
 export interface SbfpPayload {
+  /**
+   * A cheap signature of everything in this payload's scope. The sites poll it
+   * (see `sbfp-live.ts`) and re-read the workspace only when it changes, so a
+   * record a school saves shows up on the Division Office screen seconds later.
+   */
+  version: string;
+  /** The school year the console and the portal are working in. */
+  activeSy: string;
+  /** The division's schools (only her own, for a teacher), with form headers. */
+  schools: School[];
   accounts: AccountListRow[];
   records: Student[];
   feedbacks: SchoolFeedback[];
+  /** Deleted learner records, kept until the next school year starts. */
+  trash: TrashedRecord[];
+  /** Form 2's hand-entered at-risk / IP counts for the active year. */
+  summaryExtras: SummaryExtra[];
 }
 
 /**
  * Read every account and school row the caller may see. The Division Office gets
  * the whole division; a teacher gets her own school and nothing else.
+ *
+ * Only the ACTIVE school year is returned. Closed years keep their rows in the
+ * same tables, stamped with their own `sy`, and are read through
+ * `getArchivedYear()` — so a new year starts with an empty console without any
+ * row being deleted.
  */
 export async function pullData(sql: Sql, access: SbfpAccess): Promise<SbfpPayload> {
   const ids = scopeIds(access);
   const all = access.scope === "all";
 
-  const accounts = (await listAccounts(sql)).filter(
-    (account) => all || (account.schoolId && ids.includes(account.schoolId)),
-  );
-
+  // Every read is independent, so all five go out together. The school year is
+  // inlined as a subquery (the same rule as `getActiveSchoolYear`) so the record
+  // reads do not have to wait for it first: one pooler round trip instead of
+  // four. On Supabase that is most of the page's load time.
+  const activeYear = `coalesce(
+    (select sy from sbfp_school_years where closed_at is null order by sy desc limit 1),
+    (select sy from sbfp_school_years order by sy desc limit 1),
+    '2025-2026')`;
   const placeholders = ids.map((_, index) => `$${index + 1}`).join(", ");
-  const records = all
-    ? await sql.query<RecordDbRow>(`select ${RECORD_COLUMNS} from sbfp_records order by created_at desc`)
-    : ids.length === 0
-      ? []
-      : await sql.query<RecordDbRow>(
-          `select ${RECORD_COLUMNS} from sbfp_records where school_id in (${placeholders}) order by created_at desc`,
-          ids,
-        );
-
-  const feedbacks = all
-    ? await sql.query<FeedbackDbRow>(
-        "select id, school_id, author, role, category, rating, message, created_at, status, response, origin from sbfp_feedback order by created_at desc",
-      )
-    : ids.length === 0
-      ? []
-      : await sql.query<FeedbackDbRow>(
+  const [activeSy, accounts, schools, records, feedbacks, trash, summaryExtras, version] = await Promise.all([
+    getActiveSchoolYear(sql),
+    listAccounts(sql, all ? {} : { only: ids }),
+    listSchools(sql, all ? {} : { only: ids }),
+    all
+      ? sql.query<RecordDbRow>(
+          `select ${RECORD_COLUMNS} from sbfp_records
+           where deleted_at is null and sy = ${activeYear} order by created_at desc`,
+        )
+      : ids.length === 0
+        ? Promise.resolve([] as RecordDbRow[])
+        : sql.query<RecordDbRow>(
+            `select ${RECORD_COLUMNS} from sbfp_records
+             where deleted_at is null and school_id in (${placeholders}) and sy = ${activeYear}
+             order by created_at desc`,
+            ids,
+          ),
+    all
+      ? sql.query<FeedbackDbRow>(
           `select id, school_id, author, role, category, rating, message, created_at, status, response, origin
-           from sbfp_feedback where school_id in (${placeholders}) order by created_at desc`,
-          ids,
-        );
+           from sbfp_feedback where sy = ${activeYear} order by created_at desc`,
+        )
+      : ids.length === 0
+        ? Promise.resolve([] as FeedbackDbRow[])
+        : sql.query<FeedbackDbRow>(
+            `select id, school_id, author, role, category, rating, message, created_at, status, response, origin
+             from sbfp_feedback where school_id in (${placeholders}) and sy = ${activeYear}
+             order by created_at desc`,
+            ids,
+          ),
+    all
+      ? sql.query<TrashedDbRow>(
+          `select ${RECORD_COLUMNS}, deleted_at, deleted_by from sbfp_records
+           where deleted_at is not null order by deleted_at desc`,
+        )
+      : ids.length === 0
+        ? Promise.resolve([] as TrashedDbRow[])
+        : sql.query<TrashedDbRow>(
+            `select ${RECORD_COLUMNS}, deleted_at, deleted_by from sbfp_records
+             where deleted_at is not null and school_id in (${placeholders})
+             order by deleted_at desc`,
+            ids,
+          ),
+    all
+      ? sql.query<SummaryExtraDbRow>(
+          `select school_id, sy, period, grade, sex, at_risk, ips
+           from sbfp_summary_extras where sy = ${activeYear}`,
+        )
+      : ids.length === 0
+        ? Promise.resolve([] as SummaryExtraDbRow[])
+        : sql.query<SummaryExtraDbRow>(
+            `select school_id, sy, period, grade, sex, at_risk, ips
+             from sbfp_summary_extras
+             where school_id in (${placeholders}) and sy = ${activeYear}`,
+            ids,
+          ),
+    dataVersion(sql, access),
+  ]);
 
   return {
+    version,
+    activeSy,
+    schools,
     accounts,
     records: records.map(toStudent),
     feedbacks: feedbacks.map(toFeedback),
+    trash: trash.map(toTrashed),
+    summaryExtras: summaryExtras.map(toSummaryExtra),
+  };
+}
+
+/**
+ * A single string that changes whenever anything the caller can see changes:
+ * a learner record added/edited/removed, feedback sent or answered, an account
+ * issued or put on hold, a school added/renamed, a form header saved, or a new
+ * school year opened.
+ *
+ * Counts catch inserts and deletes; `max(updated_at)` catches edits. It is read
+ * on every workspace load and by the live-update poll, so it stays one small
+ * statement — the whole point is to avoid re-reading every row every few
+ * seconds.
+ */
+export async function dataVersion(sql: Sql, access: SbfpAccess): Promise<string> {
+  const ids = scopeIds(access);
+  const all = access.scope === "all";
+  const placeholders = ids.map((_, index) => `$${index + 1}`).join(", ");
+  const year = `(select sy from sbfp_school_years where closed_at is null order by sy desc limit 1)`;
+  const scoped =
+    all ? "" : ids.length === 0 ? " and false" : ` and school_id in (${placeholders})`;
+  const scopedWhere =
+    all ? "" : ids.length === 0 ? " where false" : ` where school_id in (${placeholders})`;
+  const schoolWhere =
+    all ? "" : ids.length === 0 ? " where false" : ` where id in (${placeholders})`;
+  // The caller's own account row always counts, even when it is on hold or has
+  // no school yet: that row is what decides whether this site opens at all.
+  const accountWhere = all
+    ? ""
+    : ` where ${ids.length === 0 ? "false" : `school_id in (${placeholders})`}
+        or lower(email) = $${ids.length + 1}`;
+  const params = all ? [] : [...ids, access.email];
+
+  const rows = await sql.query<{ version: string }>(
+    `select concat_ws('|',
+       (select count(*)::text || ':' || coalesce(max(coalesce(closed_at, started_at))::text, '') from sbfp_school_years),
+       (select count(*)::text || ':' || coalesce(max(updated_at)::text, '')
+          from sbfp_records where deleted_at is null and sy = ${year}${scoped}),
+       (select count(*)::text || ':' || coalesce(max(updated_at)::text, '')
+          from sbfp_records where deleted_at is not null${scoped}),
+       (select count(*)::text || ':' || coalesce(max(updated_at)::text, '')
+          from sbfp_summary_extras where sy = ${year}${scoped}),
+       (select count(*)::text || ':' || coalesce(max(updated_at)::text, '')
+          from sbfp_feedback where sy = ${year}${scoped}),
+       (select count(*)::text || ':' || coalesce(max(updated_at)::text, '') from sbfp_accounts${accountWhere}),
+       (select count(*)::text || ':' || coalesce(max(updated_at)::text, '') from sbfp_schools${schoolWhere}),
+       (select count(*)::text || ':' || coalesce(max(updated_at)::text, '') from sbfp_school_profiles${scopedWhere})
+     ) as version`,
+    params,
+  );
+  return rows[0]?.version ?? "";
+}
+
+// ── Archived school years ─────────────────────────────────────────────────────
+
+interface ArchivedProfileDbRow {
+  school_id: string;
+  division: string | null;
+  city_municipality_barangay: string | null;
+  school_id_number: string | null;
+  principal: string | null;
+  focal_person: string | null;
+  date_start_feeding: string | null;
+  last_mile_school: string | null;
+}
+
+function toArchivedForm(row: ArchivedProfileDbRow): SchoolFormDetails {
+  return {
+    division: textOf(row.division) || "Urdaneta City",
+    cityMunicipalityBarangay: textOf(row.city_municipality_barangay),
+    schoolIdNumber: textOf(row.school_id_number),
+    principal: textOf(row.principal),
+    focalPerson: textOf(row.focal_person),
+    dateStartFeeding: textOf(row.date_start_feeding),
+    lastMileSchool: textOf(row.last_mile_school) as SchoolFormDetails["lastMileSchool"],
+  };
+}
+
+/**
+ * One closed (or still active) school year, read-only: its learner records,
+ * feedback and the school information block as it stood when the year closed.
+ * The School Years page uses this; writes never do.
+ */
+export async function getArchivedYear(sql: Sql, sy: string): Promise<ArchivedSchoolYear> {
+  const years = await sql<{ sy: string; closed_at: string | Date | null }>`
+    select sy, closed_at from sbfp_school_years where sy = ${sy}
+  `;
+  if (!years[0]) {
+    throw new SchoolYearError("year_not_found", "That school year is not in the archive.");
+  }
+  const active = !years[0].closed_at;
+
+  const [records, feedbacks, profiles, live] = await Promise.all([
+    sql.query<RecordDbRow>(
+      `select ${RECORD_COLUMNS} from sbfp_records
+       where deleted_at is null and sy = $1 order by created_at desc`,
+      [sy],
+    ),
+    sql.query<FeedbackDbRow>(
+      `select id, school_id, author, role, category, rating, message, created_at, status, response, origin
+       from sbfp_feedback where sy = $1 order by created_at desc`,
+      [sy],
+    ),
+    sql.query<ArchivedProfileDbRow>(
+      "select school_id, division, city_municipality_barangay, school_id_number, principal, focal_person, date_start_feeding, last_mile_school from sbfp_school_profiles_archive where sy = $1",
+      [sy],
+    ),
+    // The active year has no archive snapshot yet (it is taken when the year
+    // closes), so its Form 1A/2 exports read the live school information.
+    active
+      ? sql.query<ArchivedProfileDbRow>(
+          "select school_id, division, city_municipality_barangay, school_id_number, principal, focal_person, date_start_feeding, last_mile_school from sbfp_school_profiles",
+        )
+      : Promise.resolve([] as ArchivedProfileDbRow[]),
+  ]);
+
+  const profileMap: Record<string, SchoolFormDetails> = {};
+  for (const row of live) profileMap[row.school_id] = toArchivedForm(row);
+  for (const row of profiles) profileMap[row.school_id] = toArchivedForm(row);
+
+  return {
+    sy,
+    records: records.map(toStudent),
+    feedbacks: feedbacks.map(toFeedback),
+    profiles: profileMap,
   };
 }

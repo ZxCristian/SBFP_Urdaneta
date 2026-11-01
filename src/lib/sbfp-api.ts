@@ -29,6 +29,8 @@ import type { FeedbackStatus, SchoolFormDetails, Student } from "@/lib/sbfp-shar
 /** The `context` shape `authMiddleware` hands a handler, plus the preview token. */
 interface AuthedContext {
   userId: string;
+  /** The verified session email, put on the context by `authMiddleware`. */
+  userEmail?: string | null;
   bearerToken?: string;
 }
 
@@ -41,13 +43,23 @@ export interface ApiFailure {
 
 export type ApiResult<T> = (T & { ok: true }) | ApiFailure;
 
-/** Run an account operation, turning a service refusal into a return value. */
+/**
+ * Run a checked operation, turning a service refusal into a return value.
+ * Account operations and school-year operations both refuse with a stable
+ * `code` + message the UI can explain.
+ */
 async function settle<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
   try {
     return { ok: true, ...(await run()) };
   } catch (err) {
     const { AccountError } = await import("./sbfp-accounts");
-    if (err instanceof AccountError) {
+    const { SchoolYearError } = await import("./sbfp-years");
+    const { SchoolError } = await import("./sbfp-schools");
+    if (
+      err instanceof AccountError ||
+      err instanceof SchoolYearError ||
+      err instanceof SchoolError
+    ) {
       return { ok: false, code: err.code, message: err.message };
     }
     throw err;
@@ -59,9 +71,12 @@ async function settle<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
  * caller with a session but no email cannot hold an account.
  */
 async function sessionEmail(context: unknown): Promise<string | null> {
-  const { bearerToken } = (context ?? {}) as AuthedContext;
+  const ctx = (context ?? {}) as AuthedContext;
+  // `authMiddleware` already resolved the session and passed the email along —
+  // reading it again here cost a second session query on every page load.
+  if (ctx.userEmail !== undefined) return ctx.userEmail;
   const { getSessionUser } = await import("@/lib/auth/verify.server");
-  const user = await getSessionUser(bearerToken);
+  const user = await getSessionUser(ctx.bearerToken);
   return user?.email ?? null;
 }
 
@@ -137,30 +152,121 @@ export const fetchWorkspace = createServerFn({ method: "GET" })
     const sql = await getSql();
     const access = email ? await resolveAccess(sql, email) : null;
     if (!access) {
-      return { email, account: null, accounts: [], records: [], feedbacks: [] };
+      const { getActiveSchoolYear } = await import("./sbfp-years");
+      return {
+        email,
+        account: null,
+        version: "",
+        schools: [],
+        accounts: [],
+        records: [],
+        feedbacks: [],
+        trash: [],
+        summaryExtras: [],
+        activeSy: await getActiveSchoolYear(sql),
+      };
     }
     const payload = await pullData(sql, access);
     return { email, account: access.account, ...payload };
   });
 
 /**
+ * Just the change signature for the caller's data — the live-update poll.
+ *
+ * This is deliberately tiny: a few counts and newest timestamps, no rows. The
+ * sites call it every few seconds while the tab is visible and re-read the
+ * workspace only when it differs from the version they already have.
+ */
+export const fetchDataVersion = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const email = await sessionEmail(context);
+    const { getSql } = await import("@/lib/db");
+    const { resolveAccess, dataVersion } = await import("./sbfp-accounts");
+    const sql = await getSql();
+    const access = email ? await resolveAccess(sql, email) : null;
+    if (!access) return { version: "" };
+    return { version: await dataVersion(sql, access) };
+  });
+
+export interface PreviousBeneficiaryInput {
+  /** The Division Office may name a school; a teacher's own school is used. */
+  schoolId?: string;
+  name: string;
+  dateOfBirth?: string;
+}
+
+/**
+ * Did this learner already have a record in a past school year at this school?
+ *
+ * Data Entry asks this a moment after the name (and date of birth) are typed,
+ * so "SBFP beneficiary in previous years?" can be answered from the archive.
+ * Returns only the school year — never a past-year row — and is scoped exactly
+ * like every other read: a teacher asks about her own school, the Division
+ * Office about the school it selected.
+ */
+export const lookupPreviousBeneficiary = createServerFn({ method: "POST" })
+  .validator((input: PreviousBeneficiaryInput) => input)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const { sql, access } = await requireAccess(await sessionEmail(context));
+    const requested = typeof data.schoolId === "string" ? data.schoolId : "";
+    const schoolId = access.scope === "all" ? requested : (access.scope[0] ?? "");
+    const name = typeof data.name === "string" ? data.name : "";
+    const dateOfBirth = typeof data.dateOfBirth === "string" ? data.dateOfBirth : "";
+    if (!schoolId || name.trim().length < 3) return { sy: null as string | null };
+    const { previousBeneficiaryYear } = await import("./sbfp-accounts");
+    return { sy: await previousBeneficiaryYear(sql, schoolId, name, dateOfBirth) };
+  });
+
+// ── School years ──────────────────────────────────────────────────────────────
+
+/** Every school year with its totals — the School Years page (Division Office only). */
+export const fetchSchoolYears = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const { sql } = await requireAdmin(await sessionEmail(context));
+    const { listSchoolYears } = await import("./sbfp-years");
+    return { years: await listSchoolYears(sql) };
+  });
+
+/** One archived year's learners, feedback and form headers, read-only. */
+export const fetchSchoolYearArchive = createServerFn({ method: "POST" })
+  .validator((input: { sy: string }) => input)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) =>
+    settle(async () => {
+      const { sql } = await requireAdmin(await sessionEmail(context));
+      const { getArchivedYear } = await import("./sbfp-accounts");
+      return { archive: await getArchivedYear(sql, data.sy) };
+    }),
+  );
+
+/** Close the current year and open the next one (Division Office only). */
+export const startSchoolYear = createServerFn({ method: "POST" })
+  .validator((input: { sy: string }) => input)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) =>
+    settle(async () => {
+      const { sql } = await requireAdmin(await sessionEmail(context));
+      const { startNewSchoolYear } = await import("./sbfp-years");
+      return startNewSchoolYear(sql, data.sy);
+    }),
+  );
+
+/**
  * Does the Division Office account exist yet? (Asked by the sign-in screen.)
  *
- * The preview's database is in-memory, so this is also where the fixed preview
- * sign-in is seeded: the door asks this question on every visit, and an empty
- * database at that moment means the preview has just started. `ensureDemoAdmin`
- * is idempotent and refuses to touch a database that already has an account, so
- * the write happens at most once. On a real Postgres (`dbSource` "postgres") it
- * is a no-op and the first-run card stays the only way in.
+ * Read-only. The console's first-run card is the only way to create that
+ * account: there is deliberately no seeded login, because a password written in
+ * the source is a published password, and this account can read every school's
+ * learner records.
  */
 export const fetchBootstrapState = createServerFn({ method: "GET" }).handler(
   async () => {
-    const { getSql, dbSource } = await import("@/lib/db");
-    const { hasAdminAccount, countAdmins, ensureDemoAdmin } = await import(
-      "./sbfp-accounts"
-    );
+    const { getSql } = await import("@/lib/db");
+    const { hasAdminAccount, countAdmins } = await import("./sbfp-accounts");
     const sql = await getSql();
-    await ensureDemoAdmin(sql, { preview: dbSource === "pglite" });
     return { hasAdmin: await hasAdminAccount(sql), admins: await countAdmins(sql) };
   },
 );
@@ -446,6 +552,61 @@ export const removeTeacherAccount = createServerFn({ method: "POST" })
     }),
   );
 
+// ── The division's schools (Division Office only) ─────────────────────────────
+
+export interface NewSchoolInput {
+  name: string;
+  type: "Elementary" | "High School";
+}
+
+/** Add a school to the division's list. */
+export const createSchoolEntry = createServerFn({ method: "POST" })
+  .validator((input: NewSchoolInput) => input)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) =>
+    settle(async () => {
+      const { sql } = await requireAdmin(await sessionEmail(context));
+      const { createSchool } = await import("./sbfp-schools");
+      return { school: await createSchool(sql, data) };
+    }),
+  );
+
+export interface SchoolPatchInput {
+  id: string;
+  name?: string;
+  type?: "Elementary" | "High School";
+}
+
+/** Rename a school, or move it between the elementary and high-school lists. */
+export const updateSchoolEntry = createServerFn({ method: "POST" })
+  .validator((input: SchoolPatchInput) => input)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) =>
+    settle(async () => {
+      const { sql } = await requireAdmin(await sessionEmail(context));
+      const { updateSchool } = await import("./sbfp-schools");
+      const { id, ...patch } = data;
+      return { school: await updateSchool(sql, id, patch) };
+    }),
+  );
+
+/**
+ * Remove a school. Refused while it still holds an account, learners or
+ * feedback — those rows are keyed by the school's id and are never deleted by a
+ * list edit.
+ */
+export const removeSchoolEntry = createServerFn({ method: "POST" })
+  .validator((input: { id: string }) => input)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) =>
+    settle(async () => {
+      const { sql } = await requireAdmin(await sessionEmail(context));
+      const { deleteSchool } = await import("./sbfp-schools");
+      await deleteSchool(sql, data.id);
+      return {};
+    }),
+  );
+
 // ── School data (either side of the app) ──────────────────────────────────────
 
 /** Save the school information block printed on the SBFP forms. */
@@ -498,12 +659,51 @@ export const removeLearnerRecord = createServerFn({ method: "POST" })
     const { sql, access } = await requireAccess(await sessionEmail(context));
     const { deleteRecord, AccountError } = await import("./sbfp-accounts");
     if (access.scope === "all") {
-      await deleteRecord(sql, data.id);
+      await deleteRecord(sql, data.id, undefined, access.email);
     } else {
       const schoolId = access.scope[0];
       if (!schoolId) throw new AccountError("forbidden", "No school is set for this account.");
-      await deleteRecord(sql, data.id, schoolId);
+      await deleteRecord(sql, data.id, schoolId, access.email);
     }
+    return { ok: true as const };
+  });
+
+/** Put a trashed learner record back on the active list. */
+export const restoreLearnerRecord = createServerFn({ method: "POST" })
+  .validator((input: { id: string }) => input)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const { sql, access } = await requireAccess(await sessionEmail(context));
+    const { restoreRecord, AccountError } = await import("./sbfp-accounts");
+    if (access.scope === "all") {
+      await restoreRecord(sql, data.id);
+    } else {
+      const schoolId = access.scope[0];
+      if (!schoolId) throw new AccountError("forbidden", "No school is set for this account.");
+      await restoreRecord(sql, data.id, schoolId);
+    }
+    return { ok: true as const };
+  });
+
+export interface SummaryExtraInput {
+  schoolId?: string;
+  period: string;
+  grade: string;
+  sex: string;
+  atRisk: number;
+  ips: number;
+}
+
+/** Save the two hand-encoded Form 2 columns for one grade/sex row. */
+export const saveSummaryExtra = createServerFn({ method: "POST" })
+  .validator((input: SummaryExtraInput) => input)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const { sql, access } = await requireAccess(await sessionEmail(context));
+    const { saveSummaryExtra: write, AccountError } = await import("./sbfp-accounts");
+    const schoolId = access.scope === "all" ? (data.schoolId ?? "") : (access.scope[0] ?? "");
+    if (!schoolId) throw new AccountError("not_found", "No school is set for this account.");
+    await write(sql, schoolId, data, access.email);
     return { ok: true as const };
   });
 

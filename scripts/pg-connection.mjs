@@ -6,11 +6,17 @@
  * (deploy-time migrations).
  *
  * The database is a standard Postgres, so the same settings work for Supabase,
- * Neon or a local server; the Supabase-specific part is the TLS requirement.
+ * Neon or a local server; the Supabase-specific part is TLS.
+ *
  * Supabase refuses plaintext connections, and a connection string copied from
- * its dashboard often omits `sslmode`, which surfaces as the confusing
- * "no pg_hba.conf entry ... no encryption" error. Adding `sslmode=require` on
- * Supabase hosts removes that trap without touching the credentials.
+ * its dashboard often omits `sslmode` — which surfaces as the confusing
+ * "no pg_hba.conf entry ... no encryption" error. But plain `sslmode=require`
+ * is not the fix either: Supabase's pooler presents a certificate chained to
+ * Supabase's own CA, which Node does not trust, and pg 8 maps `require` to
+ * full verification (`SELF_SIGNED_CERT_IN_CHAIN`). `sslmode=no-verify` keeps
+ * the connection encrypted while skipping that verification — the same trade
+ * Supabase documents for node-postgres. An operator who supplies Supabase's CA
+ * can still choose `verify-full` and it is left untouched.
  */
 
 /**
@@ -37,17 +43,31 @@ export function isSupabaseHost(connectionString) {
 }
 
 /**
- * The connection string with `sslmode=require` added when it targets Supabase
- * and names no sslmode itself. Any explicit choice (`disable`, `verify-full`, …)
- * is preserved — it is the operator's call, not ours.
+ * The connection string with a Supabase-compatible SSL mode.
+ *
+ * Missing -> `sslmode=no-verify` (TLS, no CA verification). `require`/`prefer`
+ * are rewritten to `no-verify` for the same reason: pg 8 treats them as
+ * `verify-full`, which fails against Supabase's CA without extra setup. Other
+ * explicit choices (`disable`, `verify-full`, `verify-ca`) are preserved — and
+ * so is a `uselibpqcompat=true` string, where `require` already means no
+ * verification.
  * @param {string} connectionString
  * @returns {string}
  */
 export function withSslMode(connectionString) {
   if (!isSupabaseHost(connectionString)) return connectionString;
-  if (/[?&]sslmode=/i.test(connectionString)) return connectionString;
-  const separator = connectionString.includes("?") ? "&" : "?";
-  return `${connectionString}${separator}sslmode=require`;
+  const libpqCompat = /[?&]uselibpqcompat=true(?:&|$)/i.test(connectionString);
+  const match = /[?&]sslmode=([^&]*)/i.exec(connectionString);
+  if (!match) {
+    const separator = connectionString.includes("?") ? "&" : "?";
+    return `${connectionString}${separator}sslmode=no-verify`;
+  }
+  if (libpqCompat) return connectionString;
+  const mode = match[1].toLowerCase();
+  if (mode === "require" || mode === "prefer") {
+    return connectionString.replace(/([?&]sslmode=)([^&]*)/i, "$1no-verify");
+  }
+  return connectionString;
 }
 
 /**

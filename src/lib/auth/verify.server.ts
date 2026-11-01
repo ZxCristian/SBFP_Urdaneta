@@ -83,6 +83,18 @@ export async function getSessionUser(
  * - Auth disabled + no database -> the shared dev user id.
  */
 export async function requireUserId(bearerToken?: string): Promise<string> {
+  return (await requireUser(bearerToken)).id;
+}
+
+/**
+ * The verified user — id and email — from the current request.
+ *
+ * Use this when a handler needs the email as well as the id. The session is read
+ * ONCE, here; `authMiddleware` puts the email on the context so a handler does
+ * not have to resolve the same session a second time (a whole extra database
+ * round trip on every page load).
+ */
+export async function requireUser(bearerToken?: string): Promise<VerifiedUser> {
   if (!authConfigured && !gateIdentityEnabled()) {
     if (databaseConfigured) {
       throw new Error(
@@ -90,9 +102,9 @@ export async function requireUserId(bearerToken?: string): Promise<string> {
           "refusing to fall back to the shared dev user against a real database.",
       );
     }
-    return DEV_USER_ID;
+    return { id: DEV_USER_ID, email: null };
   }
   const user = await getSessionUser(bearerToken);
   if (!user) throw new UnauthorizedError();
-  return user.id;
+  return user;
 }

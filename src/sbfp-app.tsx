@@ -1,111 +1,92 @@
 import { useState, useMemo, createContext, useContext, useEffect, useRef, Fragment, type CSSProperties } from "react";
 // Type-only: erased at build time, so ExcelJS stays out of the initial bundle.
-import type { SummaryMatrixRow } from "@/lib/sbfp-export";
+import type { SummaryMatrixRow } from "@/lib/sbfp-domain";
 // What the schools sent up through the teacher website (`/teacher`).
 import {
+  addRecord,
   removeRecord,
-  saveProfile,
+  restoreRecord,
+  sendFeedback,
   updateRecord,
   updateTeacherFeedback,
   useTeacherStore,
 } from "@/lib/sbfp-store";
 import { UserButton } from "@/lib/auth/gates";
 import { useAccess } from "@/lib/use-access";
+import { formatSchoolYear } from "@/lib/sbfp-years";
+import { learnerProblem } from "@/lib/sbfp-validation";
+import {
+  createSchoolEntry,
+  lookupPreviousBeneficiary,
+  removeSchoolEntry,
+  saveSchoolHeader,
+  updateSchoolEntry,
+} from "@/lib/sbfp-api";
 import AccountsPanel from "@/components/accounts-panel";
+import SchoolYears from "@/components/school-years";
 import { ConfirmDialog, type ConfirmPalette } from "@/components/confirm-dialog";
+import { Form2Sheet } from "@/components/form2-sheet";
+import { manualTotal, useForm2Extras } from "@/lib/use-form2-extras";
+import {
+  BMI_STATUSES,
+  EMPTY_FORM_DETAILS,
+  EMPTY_STUDENT,
+  FEEDBACK_CATEGORIES,
+  FEEDBACK_STATUSES,
+  FORM_DETAIL_FIELDS,
+  HFA_STATUSES,
+  PERIODS,
+  SPED_SCHOOL_NAME,
+  ageLabel,
+  calcBMI,
+  classifyBMI,
+  classifyBeneficiary,
+  classifyHFA,
+  computeAge,
+  countsAsPregnantOrYoung,
+  defaultsToNotPregnant,
+  formatDateMDY,
+  getGrades,
+  mustNotBePregnant,
+  shortDate,
+  sortRecords,
+  studentKey,
+  uniqueCount,
+  uniqueStudents,
+} from "@/lib/sbfp-domain";
+import type {
+  BMIStatus,
+  FeedbackCategory,
+  FeedbackStatus,
+  GradeLevel,
+  HFAStatus,
+  Period,
+  School,
+  SchoolFeedback,
+  SchoolFormDetails,
+  SchoolType,
+  Sex,
+  Student,
+  TrashedRecord,
+  YesNo,
+} from "@/lib/sbfp-domain";
 
-// ── Types ──────────────────────────────────────────────────────────────────────
-export type GradeLevel =
-  |"Kinder"|"Grade 1"|"Grade 2"|"Grade 3"|"Grade 4"|"Grade 5"|"Grade 6"
-  |"Grade 7"|"Grade 8"|"Grade 9"|"Grade 10"|"Grade 11"|"Grade 12"
-  |"SPED"|"SPED Kinder"|"SPED Grade 1"|"SPED Grade 2"|"SPED Grade 3"|"SPED Grade 4"|"SPED Grade 5"|"SPED Grade 6";
-export type Sex = "M"|"F";
-export type Period = "Baseline"|"Midline"|"Endline";
-export type SchoolType = "Elementary"|"High School";
-export type BMIStatus = "Severely Wasted"|"Wasted"|"Normal"|"Overweight"|"Obese"|"";
-export type HFAStatus = "Severely Stunted"|"Stunted"|"Normal"|"Tall"|"";
-export type YesNo = "Yes"|"No"|"";
-type View = "district"|"feedback"|"schools"|"accounts"|"dashboard"|"records"|"entry"|"table"|"analytics";
+// ── Domain ────────────────────────────────────────────────────────────────────
+// Types, the period/status lists and the WHO classification live in
+// `@/lib/sbfp-domain` so the teacher portal can import them without pulling
+// this console (and its screens) into the teacher route's bundle. The
+// re-export keeps this module's public surface unchanged.
+export * from "@/lib/sbfp-domain";
+type View = "district"|"feedback"|"schools"|"accounts"|"years"|"dashboard"|"records"|"entry"|"table"|"analytics"|"trash";
 
-export interface School {
-  id: string; name: string; type: SchoolType;
-  /** SBFP form header block (Form 1A export, and Form 2's field block) */
-  division: string;
-  cityMunicipalityBarangay: string;
-  schoolIdNumber: string;
-  principal: string;
-  focalPerson: string;
-  /** Form 2 only: ISO date the feeding starts. */
-  dateStartFeeding: string;
-  /** Form 2 only: Last Mile School, printed as ___Y ___N. */
-  lastMileSchool: YesNo;
-}
-/** The editable form header fields, minus identity. */
-export type SchoolFormDetails = Pick<School, "division"|"cityMunicipalityBarangay"|"schoolIdNumber"|"principal"|"focalPerson"|"dateStartFeeding"|"lastMileSchool">;
-export const EMPTY_FORM_DETAILS: SchoolFormDetails = {
-  division: "Urdaneta City", cityMunicipalityBarangay: "", schoolIdNumber: "", principal: "", focalPerson: "",
-  dateStartFeeding: "", lastMileSchool: "",
-};
+/** Where the browser remembers feedback it has already shown the Division Office. */
+const FEEDBACK_SEEN_KEY = "sbfp.feedbackSeen.v1";
+
 /** The school-list columns a teacher's profile owns — see the sync in `App`. */
 const SCHOOL_HEADER_KEYS = [
   "division", "cityMunicipalityBarangay", "schoolIdNumber", "principal", "focalPerson",
   "dateStartFeeding", "lastMileSchool",
 ] as const;
-
-export const FORM_DETAIL_FIELDS: [keyof SchoolFormDetails, string][] = [
-  ["division", "Division"],
-  ["cityMunicipalityBarangay", "City/Municipality/Barangay"],
-  ["schoolIdNumber", "School ID Number"],
-  ["principal", "Name of Principal"],
-  ["focalPerson", "Name of Feeding Focal Person"],
-  ["dateStartFeeding", "Date of Start of Feeding"],
-  ["lastMileSchool", "Last Mile School"],
-];
-export interface Student {
-  id: string; schoolId: string; period: Period; sy: string;
-  name: string; sex: Sex|""; gradeLevel: GradeLevel|"";
-  dateOfBirth: string; dateOfWeighing: string;
-  ageYears: string; ageMonths: string;
-  weight: string; height: string; bmi: string;
-  bmiStatus: BMIStatus; hfaStatus: HFAStatus; nutritionalStatus: string;
-  classificationOfBeneficiary: "Primary"|"Secondary"|"";
-  pregnant: YesNo; hasYoungChildren: YesNo; dewormed: YesNo;
-  parentConsentMilk: YesNo; fourPs: YesNo; sbfpPreviousYears: YesNo;
-}
-
-// ── School feedback — what the schools send up, aggregated district-wide ───────
-export type FeedbackCategory =
-  |"Feeding Implementation"|"Nutrition Data"|"Supplies & Logistics"
-  |"Learner Concerns"|"System / Forms"|"Other";
-export type FeedbackStatus = "New"|"Acknowledged"|"Resolved";
-export interface SchoolFeedback {
-  id: string;
-  /** The school that sent it — the Feedbacks page shows every school together. */
-  schoolId: string;
-  author: string;
-  /** e.g. "SBFP Focal", "School Head", "Grade 6 Adviser" */
-  role: string;
-  category: FeedbackCategory;
-  /** 1–5: how the feeding program is running at that school. */
-  rating: number;
-  message: string;
-  /** ISO date the school sent it. */
-  createdAt: string;
-  status: FeedbackStatus;
-  /** The district's answer back to the school, once written. */
-  response?: string;
-  /**
-   * Set when the entry came in through the teacher website rather than the
-   * district's own Feedbacks form — the feed shows a "Teacher Portal" tag so
-   * the district can tell a school's submission from its own records.
-   */
-  origin?: "Teacher Portal";
-}
-export const FEEDBACK_CATEGORIES: FeedbackCategory[] = [
-  "Feeding Implementation","Nutrition Data","Supplies & Logistics",
-  "Learner Concerns","System / Forms","Other",
-];
-export const FEEDBACK_STATUSES: FeedbackStatus[] = ["New","Acknowledged","Resolved"];
 
 // ── Theme ──────────────────────────────────────────────────────────────────────
 export interface TC {
@@ -147,234 +128,13 @@ const LIGHT: TC = {
 const ThemeCtx = createContext<TC>(DARK);
 const useT = () => useContext(ThemeCtx);
 
-// ── Schools (initial constants) ────────────────────────────────────────────────
-export const INIT_ES: School[] = [
-  "Anonas East Elementary School",
-  "Anonas Elementary School",
-  "Bactad East Elementary School",
-  "Bactad Community School",
-  "Badipa Elementary School",
-  "Bolaoen Elementary School",
-  "Cabaruan Elementary School",
-  "Cabuloan Elementary School",
-  "Calegu Integrated School",
-  "Camanang Elementary School",
-  "Camantiles Elementary School",
-  "Casabula Elementary School",
-  "Catablan Integrated School",
-  "Cayambanan Elementary School",
-  "Consolacion Elementary School",
-  "DAFSIS",
-  "DAPSMECS East",
-  "DAPSMECS Main",
-  "DAPSMECS West",
-  "Don A. Maiquez Memorial Elementary School",
-  "Don C. Blanco Elementary School",
-  "DF Maramba Elementary School",
-  "Don V. Ordoñez Memorial School",
-  "F. B. Goce Community School",
-  "Labit East Elementary School",
-  "Labit West Elementary School",
-  "Lananpin Elementary School",
-  "Lazaga Elementary School",
-  "Manan Elementary School",
-  "Nanbacuran Elementary School",
-  "Nancalobasaan Elementary School",
-  "Nancalobasaan RIS",
-  "Nancayasan Elementary School",
-  "Oltama Elementary School",
-  "Palina East Elementary School",
-  "Pinmaludpod Elementary School",
-  "San Jose Elementary School",
-  "San Jose Leet Integrated School",
-  "Sta. Lucia Elementary School",
-  "Tabuyoc Elementary School",
-  "Tiposu Elementary School",
-  "Trinidad S. Perez Elementary School",
-  "Tulong Integrated School",
-  "Urdaneta 1 Central School",
-  "Vicente Taaca Memorial School",
-].map((name, i) => ({ id:`es${String(i+1).padStart(2,"0")}`, name, type:"Elementary" as SchoolType, ...EMPTY_FORM_DETAILS }));
-
-export const INIT_HS: School[] = [
-  "Anonas National High School",
-  "Bactad East National High School",
-  "Badipa National High School",
-  "Cabaruan National High School",
-  "Cabuloan National High School",
-  "Camantiles National High School",
-  "Catablan Integrated School",
-  "Labit National High School",
-  "Lananpin National High School",
-  "MQ Umipig National High School",
-  "Palina East National High School",
-  "PT Orata National High School",
-  "Urdaneta City National High School",
-].map((name, i) => ({ id:`hs${String(i+1).padStart(2,"0")}`, name, type:"High School" as SchoolType, ...EMPTY_FORM_DETAILS }));
-
-// ── Constants ──────────────────────────────────────────────────────────────────
-const ES_GRADES: GradeLevel[] = ["Kinder","Grade 1","Grade 2","Grade 3","Grade 4","Grade 5","Grade 6"];
-const ES_GRADES_WITH_SPED: GradeLevel[] = [
-  "Kinder","Grade 1","Grade 2","Grade 3","Grade 4","Grade 5","Grade 6",
-  "SPED Kinder","SPED Grade 1","SPED Grade 2","SPED Grade 3","SPED Grade 4","SPED Grade 5","SPED Grade 6",
-];
-const HS_GRADES: GradeLevel[] = ["Grade 7","Grade 8","Grade 9","Grade 10","Grade 11","Grade 12"];
-export const PERIODS: Period[] = ["Baseline","Midline","Endline"];
-export const BMI_STATUSES: BMIStatus[] = ["Severely Wasted","Wasted","Normal","Overweight","Obese"];
-export const HFA_STATUSES: HFAStatus[] = ["Severely Stunted","Stunted","Normal","Tall"];
-// Period / BMI / HFA data colours now come from the theme (t.period, t.bmi, t.hfa)
-// so day mode can use readable tones instead of the neon dark-mode set.
+// ── Schools ───────────────────────────────────────────────────────────────────
+// The division's schools are rows in `sbfp_schools` (seed: migrations/0005),
+// read through `@/lib/sbfp-store` — not a constant in this file. Both sites use
+// the same list, and the Division Office can add or rename a school without a
+// redeploy. `School` stays the shape every screen already expects.
 
 const getSchool = (schools: School[], id: string) => schools.find(s => s.id === id);
-export const SPED_SCHOOL_NAME = "Urdaneta 1 Central School";
-const GRADE_ORDER: GradeLevel[] = [
-  "Kinder","Grade 1","Grade 2","Grade 3","Grade 4","Grade 5","Grade 6",
-  "SPED Kinder","SPED Grade 1","SPED Grade 2","SPED Grade 3","SPED Grade 4","SPED Grade 5","SPED Grade 6",
-  "Grade 7","Grade 8","Grade 9","Grade 10","Grade 11","Grade 12","SPED",
-];
-const gradeRank = (g: string) => {
-  const i = GRADE_ORDER.indexOf(g as GradeLevel);
-  return i < 0 ? 99 : i;
-};
-const periodRank: Record<Period, number> = { Baseline: 0, Midline: 1, Endline: 2 };
-export function sortRecords(list: Student[]): Student[] {
-  return [...list].sort((a, b) => {
-    const ga = gradeRank(a.gradeLevel);
-    const gb = gradeRank(b.gradeLevel);
-    if (ga !== gb) return ga - gb;
-    const name = a.name.localeCompare(b.name);
-    if (name !== 0) return name;
-    return (periodRank[a.period] ?? 9) - (periodRank[b.period] ?? 9);
-  });
-}
-export const getGrades = (school: School|undefined): GradeLevel[] => {
-  if (!school) return ES_GRADES;
-  if (school.type === "High School") return HS_GRADES;
-  // Only Urdaneta 1 Central School offers SPED Kinder–Grade 6
-  if (school.name === SPED_SCHOOL_NAME) return ES_GRADES_WITH_SPED;
-  return ES_GRADES;
-};
-
-/** Unique person key (same student across Baseline/Midline/Endline) */
-export const studentKey = (s: { name: string; dateOfBirth: string; sex: string; schoolId?: string }) =>
-  `${s.schoolId ?? ""}|${s.name}|${s.dateOfBirth}|${s.sex}`;
-
-/** Count unique students (not period records) */
-export const uniqueCount = (list: Student[]) => new Set(list.map(studentKey)).size;
-
-/** One record per student, preferring Endline → Midline → Baseline (for accurate counts) */
-export function uniqueStudents(list: Student[]): Student[] {
-  const order: Record<Period, number> = { Endline: 0, Midline: 1, Baseline: 2 };
-  const map = new Map<string, Student>();
-  for (const s of list) {
-    const k = studentKey(s);
-    const existing = map.get(k);
-    if (!existing || order[s.period] < order[existing.period]) map.set(k, s);
-  }
-  return Array.from(map.values());
-}
-
-/** Grades 2–12 used for Primary/Secondary beneficiary rules */
-const BENEFICIARY_GRADES: GradeLevel[] = ["Grade 2","Grade 3","Grade 4","Grade 5","Grade 6","Grade 7","Grade 8","Grade 9","Grade 10","Grade 11","Grade 12"];
-
-/** Auto-assign beneficiary class
- *  - Kinder & Grade 1 → always Primary
- *  - Grades 2–12: Primary = Severely Wasted, Secondary = Severely Stunted
- */
-export function classifyBeneficiary(grade: string, bmiStatus: string, hfaStatus: string): "Primary"|"Secondary"|"" {
-  // Kinder / Grade 1 (regular or SPED) → always Primary
-  if (grade === "Kinder" || grade === "Grade 1" || grade === "SPED Kinder" || grade === "SPED Grade 1") return "Primary";
-  // SPED Grade 2–6 follow same severe rules as regular G2–6
-  const normalized = grade.replace(/^SPED /, "") as GradeLevel;
-  if (!BENEFICIARY_GRADES.includes(normalized) && !BENEFICIARY_GRADES.includes(grade as GradeLevel)) return "";
-  if (bmiStatus === "Severely Wasted") return "Primary";
-  if (hfaStatus === "Severely Stunted") return "Secondary";
-  return "";
-}
-
-/** Format date YYYY-MM-DD → MM/DD/YYYY for SBFP form */
-export function formatDateMDY(iso: string): string {
-  if (!iso) return "";
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return iso;
-  return `${m[2]}/${m[3]}/${m[1]}`;
-}
-
-// ── WHO 2007 Reference Tables ──────────────────────────────────────────────────
-// BMI-for-age [median, SD] age 5–19 (index 0 = age 5)
-const WHO_BMI_M: [number,number][] = [[15.3,1.0],[15.3,1.1],[15.5,1.2],[15.8,1.4],[16.3,1.6],[16.8,1.9],[17.5,2.2],[18.2,2.5],[19.0,2.8],[19.8,3.0],[20.5,3.1],[21.1,3.2],[21.6,3.3],[22.0,3.4],[22.3,3.4]];
-const WHO_BMI_F: [number,number][] = [[15.3,1.0],[15.3,1.1],[15.5,1.3],[16.0,1.6],[16.6,1.9],[17.3,2.2],[18.0,2.6],[18.7,2.9],[19.4,3.1],[19.9,3.2],[20.4,3.3],[20.8,3.3],[21.1,3.3],[21.3,3.4],[21.4,3.4]];
-// HFA [median cm, SD] age 5–19
-const WHO_HFA_M: [number,number][] = [[110.0,4.3],[116.0,4.5],[121.7,4.8],[127.3,5.1],[132.6,5.4],[137.8,5.8],[143.5,6.4],[149.8,7.2],[156.4,7.8],[162.6,7.8],[167.0,7.3],[170.0,6.9],[171.6,6.7],[172.4,6.6],[173.0,6.6]];
-const WHO_HFA_F: [number,number][] = [[109.4,4.2],[115.1,4.5],[120.8,4.8],[126.3,5.2],[131.5,5.6],[136.8,5.9],[142.5,6.0],[147.6,6.0],[151.4,5.9],[153.7,5.8],[154.9,5.8],[155.6,5.7],[156.0,5.7],[156.3,5.7],[156.4,5.7]];
-
-// ── Helper Functions ───────────────────────────────────────────────────────────
-export function calcBMI(w: string, h: string): string {
-  const wn = parseFloat(w), hn = parseFloat(h) / 100;
-  if (!wn || !hn || hn <= 0) return "";
-  return (wn / (hn * hn)).toFixed(2);
-}
-export function computeAge(dob: string): { years: string; months: string } {
-  if (!dob) return { years:"", months:"" };
-  const birth = new Date(dob), today = new Date();
-  if (isNaN(birth.getTime()) || birth > today) return { years:"", months:"" };
-  let years = today.getFullYear() - birth.getFullYear();
-  let months = today.getMonth() - birth.getMonth();
-  if (today.getDate() < birth.getDate()) months--;
-  if (months < 0) { years--; months += 12; }
-  return { years: String(years), months: String(months) };
-}
-export function classifyBMI(bmi: string, ageYears: string, sex: string): BMIStatus {
-  const b = parseFloat(bmi), age = parseInt(ageYears);
-  if (!b || !age || age < 5 || age > 19 || (sex !== "M" && sex !== "F")) return "";
-  const [med, sd] = (sex === "M" ? WHO_BMI_M : WHO_BMI_F)[Math.min(age - 5, 14)];
-  const z = (b - med) / sd;
-  if (z < -3) return "Severely Wasted";
-  if (z < -2) return "Wasted";
-  if (z <= 1) return "Normal";
-  if (z <= 2) return "Overweight";
-  return "Obese";
-}
-export function classifyHFA(height: string, ageYears: string, sex: string): HFAStatus {
-  const h = parseFloat(height), age = parseInt(ageYears);
-  if (!h || !age || age < 5 || age > 19 || (sex !== "M" && sex !== "F")) return "";
-  const [med, sd] = (sex === "M" ? WHO_HFA_M : WHO_HFA_F)[Math.min(age - 5, 14)];
-  const z = (h - med) / sd;
-  if (z < -3) return "Severely Stunted";
-  if (z < -2) return "Stunted";
-  if (z <= 2) return "Normal";
-  return "Tall";
-}
-
-// ── Learner records ────────────────────────────────────────────────────────────
-export const EMPTY_STUDENT = (schoolId: string, period: Period|"" = ""): Omit<Student,"id"> => ({
-  schoolId, period: (period || "") as Period, sy:"2025-2026", name:"", sex:"", gradeLevel: "",
-  dateOfBirth:"", dateOfWeighing:"", ageYears:"", ageMonths:"",
-  weight:"", height:"", bmi:"", bmiStatus:"", hfaStatus:"",
-  nutritionalStatus:"", classificationOfBeneficiary:"",
-  pregnant:"", hasYoungChildren:"", dewormed:"", parentConsentMilk:"", fourPs:"", sbfpPreviousYears:"",
-});
-
-
-// ── Feedback helpers ────────────────────────────────────────────────────────────────
-const MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-
-/** ISO date → "Oct 02, 2026" */
-export function shortDate(iso: string): string {
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return iso;
-  return `${MONTH_ABBR[Number(m[2]) - 1] ?? m[2]} ${m[3]}, ${m[1]}`;
-}
-
-/** ISO date → "today" / "6 days ago"; anything older stays an absolute date. */
-export function ageLabel(iso: string): string {
-  const days = Math.floor((Date.now() - Date.parse(`${iso}T00:00:00`)) / 86400000);
-  if (!Number.isFinite(days) || days < 0) return shortDate(iso);
-  if (days === 0) return "today";
-  if (days === 1) return "yesterday";
-  if (days < 30) return `${days} days ago`;
-  return shortDate(iso);
-}
 
 /** One hue per kind of feedback (6-digit hex — Pill appends alpha to it). */
 function categoryColor(c: FeedbackCategory, t: TC): string {
@@ -437,12 +197,12 @@ function Bar({ val, max, color, t }: { val:number; max:number; color:string; t:T
   );
 }
 
-function YesNoToggle({ value, onChange, t }: { value:YesNo; onChange:(v:YesNo)=>void; t:TC }) {
+function YesNoToggle({ value, onChange, t, disabled }: { value:YesNo; onChange:(v:YesNo)=>void; t:TC; disabled?:boolean }) {
   return (
-    <div className="flex gap-1">
+    <div className="flex gap-1" style={{ opacity: disabled ? 0.65 : 1 }}>
       {(["Yes","No"] as YesNo[]).map(v => (
-        <button key={v} onClick={() => onChange(v)} className="flex-1 h-[38px] text-xs rounded-sm cursor-pointer border transition-colors"
-          style={value===v ? { background:v==="Yes"?t.accentBg:t.danger+"15", color:v==="Yes"?t.accent:t.danger, borderColor:v==="Yes"?t.accent+"40":t.danger+"40" } : { background:t.surface2, color:t.dim, borderColor:t.border }}>
+        <button key={v} onClick={() => !disabled && onChange(v)} disabled={disabled} className="flex-1 h-[38px] text-xs rounded-sm border transition-colors"
+          style={{ ...(value===v ? { background:v==="Yes"?t.accentBg:t.danger+"15", color:v==="Yes"?t.accent:t.danger, borderColor:v==="Yes"?t.accent+"40":t.danger+"40" } : { background:t.surface2, color:t.dim, borderColor:t.border }), cursor: disabled ? "not-allowed" : "pointer" }}>
           {v}
         </button>
       ))}
@@ -460,13 +220,19 @@ function Field({ label, children, span, t }: { label: string; children: React.Re
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
-function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, toggleTheme, schools, registeredSchools, mobileOpen, onNavigate }: {
+function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, toggleTheme, schools, registeredSchools, activeSy, mobileOpen, onNavigate, unreadFeedback, trashCount }: {
   view:View; setView:(v:View)=>void; selectedSchool:School|null; setSelectedSchool:(s:School|null)=>void;
   themeMode:"dark"|"light"; toggleTheme:()=>void; schools:School[];
   /** How many schools hold a Teacher Portal account issued from this console. */
   registeredSchools:number;
+  /** The school year every screen below is working in. */
+  activeSy:string;
   /** Narrow screens: the same panel slides in over the content as a drawer. */
   mobileOpen:boolean; onNavigate:()=>void;
+  /** Feedback that arrived since the Division Office last opened the feed. */
+  unreadFeedback:number;
+  /** Learner records waiting in the trash. */
+  trashCount:number;
 }) {
   const t = useT();
   const nav: { id:View; label:string; icon:string; requiresSchool?:boolean }[] = [
@@ -474,8 +240,10 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
     { id:"feedback", label:"Feedbacks", icon:"✉" },
     { id:"schools", label:"All Schools", icon:"◉" },
     { id:"accounts", label:"Teacher Accounts", icon:"⚙" },
+    { id:"years", label:"School Years", icon:"▤" },
     { id:"dashboard", label:"Dashboard", icon:"▦", requiresSchool:true },
     { id:"records", label:"Student Records", icon:"☰", requiresSchool:true },
+    { id:"trash", label:"Trash", icon:"♲" },
     { id:"entry", label:"Data Entry", icon:"✎", requiresSchool:true },
     { id:"table", label:"Summary Table", icon:"≡", requiresSchool:true },
     { id:"analytics", label:"Analytics", icon:"↗", requiresSchool:true },
@@ -515,7 +283,18 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
               style={{ color: disabled ? t.faint : active ? t.accent : t.dim, background: active ? t.accentBg : "transparent", cursor: disabled ? "not-allowed" : "pointer" }}
               onMouseEnter={e => { if (!disabled && !active) e.currentTarget.style.color = t.sub; }}
               onMouseLeave={e => { if (!disabled && !active) e.currentTarget.style.color = t.dim; }}>
-              <span className="w-4 text-center text-base">{item.icon}</span>{item.label}
+              <span className="w-4 text-center text-base">{item.icon}</span>
+              <span className="flex-1">{item.label}</span>
+              {item.id === "feedback" && unreadFeedback > 0 && (
+                <span style={{ minWidth: 18, height: 18, borderRadius: 999, padding: "0 5px", display: "inline-flex", alignItems: "center", justifyContent: "center", background: t.danger, color: "#fff", fontSize: 10, fontWeight: 700 }}>
+                  {unreadFeedback}
+                </span>
+              )}
+              {item.id === "trash" && trashCount > 0 && (
+                <span style={{ minWidth: 18, height: 18, borderRadius: 999, padding: "0 5px", display: "inline-flex", alignItems: "center", justifyContent: "center", background: t.surface2, color: t.dim, border: `1px solid ${t.border}`, fontSize: 10, fontWeight: 700 }}>
+                  {trashCount}
+                </span>
+              )}
             </button>
           );
         })}
@@ -541,7 +320,7 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
           {themeMode === "dark" ? "Day Mode" : "Night Mode"}
         </button>
         <div className="text-[10px] leading-relaxed" style={{ color:t.faint }}>
-          {schools.filter(s=>s.type==="Elementary").length} ES · {schools.filter(s=>s.type==="High School").length} HS<br />SY 2025–2026
+          {schools.filter(s=>s.type==="Elementary").length} ES · {schools.filter(s=>s.type==="High School").length} HS<br />SY {formatSchoolYear(activeSy)}
         </div>
       </div>
     </aside>
@@ -549,8 +328,8 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
 }
 
 // ── District Dashboard ────────────────────────────────────────────────────────
-function DistrictDashboard({ students, schools, feedbacks, onOpenFeedbacks }: {
-  students:Student[]; schools:School[]; feedbacks:SchoolFeedback[]; onOpenFeedbacks:()=>void;
+function DistrictDashboard({ students, schools, feedbacks, activeSy, onOpenFeedbacks }: {
+  students:Student[]; schools:School[]; feedbacks:SchoolFeedback[]; activeSy:string; onOpenFeedbacks:()=>void;
 }) {
   const t = useT();
   const [tab, setTab] = useState<"All"|"Elementary"|"High School">("All");
@@ -597,7 +376,7 @@ function DistrictDashboard({ students, schools, feedbacks, onOpenFeedbacks }: {
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-lg font-semibold" style={{ color:t.text }}>District Dashboard</h1>
-          <p className="text-xs mt-0.5" style={{ color:t.dim }}>All Schools · SY 2025–2026</p>
+          <p className="text-xs mt-0.5" style={{ color:t.dim }}>All Schools · SY {formatSchoolYear(activeSy)}</p>
         </div>
         <div className="flex gap-1.5">
           {(["All","Elementary","High School"] as const).map(tb => (
@@ -1286,7 +1065,7 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
 }
 
 // ── Per-School Dashboard ──────────────────────────────────────────────────────
-function Dashboard({ students, school }: { students:Student[]; school:School }) {
+function Dashboard({ students, school, activeSy }: { students:Student[]; school:School; activeSy:string }) {
   const t = useT();
   const [period, setPeriod] = useState<Period|"All">("All");
   const fRaw = period==="All" ? students : students.filter(s=>s.period===period);
@@ -1305,7 +1084,7 @@ function Dashboard({ students, school }: { students:Student[]; school:School }) 
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-lg font-semibold" style={{ color:t.text }}>{school.name}</h1>
-          <p className="text-xs mt-0.5" style={{ color:t.dim }}>{school.type} · SY 2025–2026</p>
+          <p className="text-xs mt-0.5" style={{ color:t.dim }}>{school.type} · SY {formatSchoolYear(activeSy)}</p>
         </div>
         <div className="flex gap-1.5">
           {(["All",...PERIODS] as const).map(p => (
@@ -1374,17 +1153,25 @@ function Dashboard({ students, school }: { students:Student[]; school:School }) 
 }
 
 // ── Data Entry ────────────────────────────────────────────────────────────────
-function DataEntry({ students, setStudents, school, setView, editingStudent, clearEditing }: {
+function DataEntry({ students, setStudents, school, setView, editingStudent, clearEditing, activeSy }: {
   students:Student[]; setStudents:(s:Student[])=>void; school:School;
-  setView:(v:View)=>void; editingStudent:Student|null; clearEditing:()=>void;
+  setView:(v:View)=>void; editingStudent:Student|null; clearEditing:()=>void; activeSy:string;
 }) {
   const t = useT();
   const [period, setPeriod] = useState<Period|null>(editingStudent?.period ?? null);
   const [form, setForm] = useState<Omit<Student,"id">>(() =>
-    editingStudent ? { ...editingStudent } : EMPTY_STUDENT(school.id, "")
+    editingStudent ? { ...editingStudent } : EMPTY_STUDENT(school.id, "", activeSy)
   );
   const [saved, setSaved] = useState(false);
   const [periodError, setPeriodError] = useState(false);
+  /** Why the record cannot be saved (missing or impossible measurements). */
+  const [formError, setFormError] = useState("");
+  /** The past year this learner's record was found in, or null. */
+  const [previousSy, setPreviousSy] = useState<string | null>(null);
+  /** The Division Office answered the previous-years question itself. */
+  const previousTouched = useRef(false);
+  /** The current "Yes" was set by the archive lookup, not by a person. */
+  const autoPrevious = useRef(false);
   const periodRef = useRef<HTMLDivElement>(null);
   /**
    * A status the user picked by hand outranks the WHO auto-classification for
@@ -1398,19 +1185,81 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
   // Populate form when editingStudent changes
   useEffect(() => {
     resetManualStatus();
+    previousTouched.current = false;
+    autoPrevious.current = false;
+    setPreviousSy(null);
     if (editingStudent) {
-      setForm({ ...editingStudent });
+      const loaded = { ...editingStudent };
+      // Only a male learner is locked to "No"; a female learner aged 10 or
+      // below keeps whatever is stored until her age is edited again.
+      if (mustNotBePregnant(loaded.sex)) loaded.pregnant = "No";
+      setForm(loaded);
       setPeriod(editingStudent.period);
       setPeriodError(false);
     }
   }, [editingStudent?.id]);
 
   const grades = getGrades(school);
+
+  // Answer "beneficiary in previous years?" from the school's archive once a
+  // name (and date of birth, if given) is on the form. Debounced; returns only
+  // the year; never overrides a choice the Division Office made itself.
+  useEffect(() => {
+    if (editingStudent) return;
+    const name = form.name.trim();
+    if (name.length < 3) {
+      if (autoPrevious.current) {
+        autoPrevious.current = false;
+        setForm((f) =>
+          f.sbfpPreviousYears === "Yes" ? { ...f, sbfpPreviousYears: "No" } : f,
+        );
+      }
+      setPreviousSy(null);
+      return;
+    }
+    if (previousTouched.current) {
+      setPreviousSy(null);
+      return;
+    }
+    let live = true;
+    const timer = setTimeout(() => {
+      void lookupPreviousBeneficiary({ data: { schoolId: school.id, name, dateOfBirth: form.dateOfBirth } })
+        .then((result) => {
+          if (!live) return;
+          setPreviousSy(result.sy);
+          if (result.sy) {
+            autoPrevious.current = true;
+            setForm((f) =>
+              f.sbfpPreviousYears === "Yes" ? f : { ...f, sbfpPreviousYears: "Yes" },
+            );
+          } else if (autoPrevious.current) {
+            // The name moved on to someone with no archive match; take back
+            // the auto "Yes" rather than leave a stale answer on the form.
+            autoPrevious.current = false;
+            setForm((f) =>
+              f.sbfpPreviousYears === "Yes" ? { ...f, sbfpPreviousYears: "No" } : f,
+            );
+          }
+        })
+        .catch(() => {
+          if (live) setPreviousSy(null);
+        });
+    }, 400);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [form.name, form.dateOfBirth, editingStudent?.id, school.id]);
   const inp: CSSProperties = { background:t.surface2, color:t.text, border:`1px solid ${t.border}`, fontFamily:"'Outfit',sans-serif" };
   const inpMono: CSSProperties = { ...inp, fontFamily:"'JetBrains Mono',monospace" };
   const cls = "w-full text-sm px-3 py-2 rounded-sm outline-none";
 
   const set = (key: keyof Omit<Student,"id">, val: string) => {
+    setFormError("");
+    if (key === "sbfpPreviousYears") {
+      previousTouched.current = true;
+      autoPrevious.current = false;
+    }
     if (key === "bmiStatus") manualStatus.current.bmi = true;
     if (key === "hfaStatus") manualStatus.current.hfa = true;
     setForm(f => {
@@ -1454,6 +1303,16 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
         const autoClass = classifyBeneficiary(next.gradeLevel, next.bmiStatus, next.hfaStatus);
         if (autoClass) next.classificationOfBeneficiary = autoClass;
       }
+      // A male learner is locked to "No". A female learner aged 10 or below
+      // only defaults to "No" when sex or age changes; the answer stays
+      // editable, so a deliberate "Yes" is not overwritten on every keystroke.
+      if (mustNotBePregnant(next.sex)) next.pregnant = "No";
+      else if (
+        (key === "sex" || key === "dateOfBirth" || key === "ageYears") &&
+        defaultsToNotPregnant(next.sex, next.ageYears)
+      ) {
+        next.pregnant = "No";
+      }
       return next;
     });
   };
@@ -1473,6 +1332,20 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
       return;
     }
     if (!form.name.trim()) return;
+    // Same rule as the teacher portal and the server: an unweighed learner is
+    // not a record. Without this, 0 kg / 0 cm was saved and counted as a
+    // learner with no BMI classification.
+    const problem = learnerProblem({
+      name: form.name,
+      period,
+      weight: form.weight,
+      height: form.height,
+    });
+    if (problem) {
+      setFormError(problem);
+      return;
+    }
+    setFormError("");
     const id = editingStudent?.id ?? "s" + Date.now();
     const payload = { ...form, period, id };
     if (editingStudent) {
@@ -1487,7 +1360,10 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
       setPeriod(null);
       setPeriodError(false);
       resetManualStatus();
-      setForm(EMPTY_STUDENT(school.id, ""));
+      previousTouched.current = false;
+      autoPrevious.current = false;
+      setPreviousSy(null);
+      setForm(EMPTY_STUDENT(school.id, "", activeSy));
     }
   };
 
@@ -1587,10 +1463,10 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
         <div className="text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>Anthropometric Measurements</div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <Field t={t} label="Weight (kg)">
-            <input type="number" step="0.1" min={0} value={form.weight} onChange={e=>set("weight",e.target.value)} placeholder="e.g. 24.5" style={inp} className={cls} />
+            <input type="number" step="0.1" min={0.1} max={300} required value={form.weight} onChange={e=>set("weight",e.target.value)} placeholder="e.g. 24.5" style={inp} className={cls} />
           </Field>
           <Field t={t} label="Height (cm)">
-            <input type="number" step="0.1" min={0} value={form.height} onChange={e=>set("height",e.target.value)} placeholder="e.g. 118.0" style={inp} className={cls} />
+            <input type="number" step="0.1" min={1} max={250} required value={form.height} onChange={e=>set("height",e.target.value)} placeholder="e.g. 118.0" style={inp} className={cls} />
           </Field>
           <Field t={t} label={`BMI ${ageYrs>=6?"(auto)":"(6 y.o.+)"}`}>
             <input value={form.bmi} readOnly={ageYrs>=6} onChange={e=>ageYrs<6&&set("bmi",e.target.value)}
@@ -1648,12 +1524,32 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
             ["Pregnant?","pregnant"], ["With 0–1 Year Old Children?","hasYoungChildren"],
             ["Dewormed?","dewormed"], ["Parent's Consent for Milk?","parentConsentMilk"],
             ["Participation in 4Ps?","fourPs"], ["Beneficiary of SBFP in Previous Years?","sbfpPreviousYears"],
-          ] as [string, keyof Omit<Student,"id">][]).map(([label,key]) => (
-            <div key={key as string}>
-              <label className="block text-[9px] tracking-widest uppercase mb-1.5" style={{ color:t.dim }}>{label}</label>
-              <YesNoToggle value={form[key] as YesNo} onChange={v=>set(key,v)} t={t} />
-            </div>
-          ))}
+          ] as [string, keyof Omit<Student,"id">][]).map(([label,key]) => {
+            const locked = key === "pregnant" && mustNotBePregnant(form.sex);
+            const defaultsNo = key === "pregnant" && !locked &&
+              defaultsToNotPregnant(form.sex, form.ageYears);
+            return (
+              <div key={key as string}>
+                <label className="block text-[9px] tracking-widest uppercase mb-1.5" style={{ color:t.dim }}>{label}</label>
+                <YesNoToggle value={form[key] as YesNo} onChange={v=>set(key,v)} t={t} disabled={locked} />
+                {locked && (
+                  <p className="text-[10px] mt-1.5" style={{ color:t.dim, lineHeight:1.45 }}>
+                    Male learners are recorded as not pregnant.
+                  </p>
+                )}
+                {defaultsNo && (
+                  <p className="text-[10px] mt-1.5" style={{ color:t.dim, lineHeight:1.45 }}>
+                    Defaults to No at age 10 or below — you can still change it.
+                  </p>
+                )}
+                {key === "sbfpPreviousYears" && previousSy && (
+                  <p className="text-[10px] mt-1.5" style={{ color:t.accent, lineHeight:1.45 }}>
+                    This learner already has a record in SY {formatSchoolYear(previousSy)}.
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
       </div>
@@ -1666,17 +1562,20 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
         </button>
         {editingStudent
           ? <button onClick={handleCancel} className="px-4 py-2.5 text-sm cursor-pointer rounded-sm border transition-colors" style={{ borderColor:t.border, color:t.dim, background:t.surface }}>Cancel</button>
-          : <button onClick={() => { setPeriod(null); setPeriodError(false); resetManualStatus(); setForm(EMPTY_STUDENT(school.id, "")); }} className="px-4 py-2.5 text-sm cursor-pointer rounded-sm border" style={{ borderColor:t.border, color:t.dim }}>Clear</button>}
+          : <button onClick={() => { setPeriod(null); setPeriodError(false); resetManualStatus(); previousTouched.current = false; autoPrevious.current = false; setPreviousSy(null); setForm(EMPTY_STUDENT(school.id, "", activeSy)); }} className="px-4 py-2.5 text-sm cursor-pointer rounded-sm border" style={{ borderColor:t.border, color:t.dim }}>Clear</button>}
         <button onClick={() => setView("records")} className="text-xs ml-auto cursor-pointer" style={{ color:t.dim }}>View all records →</button>
       </div>
+      {formError && (
+        <p role="alert" className="text-xs" style={{ color:t.danger, lineHeight:1.55 }}>{formError}</p>
+      )}
     </div>
   );
 }
 
 // ── Student Records ────────────────────────────────────────────────────────────
-function StudentRecords({ students, setStudents, school, setView, onEdit }: {
+function StudentRecords({ students, setStudents, school, setView, onEdit, activeSy }: {
   students:Student[]; setStudents:(s:Student[])=>void; school:School;
-  setView:(v:View)=>void; onEdit:(s:Student)=>void;
+  setView:(v:View)=>void; onEdit:(s:Student)=>void; activeSy:string;
 }) {
   const t = useT();
   const [period, setPeriod] = useState<Period|"All">("All");
@@ -1720,7 +1619,7 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }: {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={async () => { setExporting(true); try { const { exportStudentsToExcel } = await import("@/lib/sbfp-export"); await exportStudentsToExcel(school, filtered, period === "All" ? "All" : period); } finally { setExporting(false); } }}
+            onClick={async () => { setExporting(true); try { const { exportStudentsToExcel } = await import("@/lib/sbfp-export"); await exportStudentsToExcel(school, filtered, period === "All" ? "All" : period, activeSy); } finally { setExporting(false); } }}
             disabled={filtered.length === 0}
             className="px-4 py-2 text-sm font-semibold rounded-sm cursor-pointer border transition-colors"
             style={{
@@ -1863,21 +1762,101 @@ function StudentRecords({ students, setStudents, school, setView, onEdit }: {
           {pendingDelete?.period ? ` · ${pendingDelete.period}` : ""}
         </strong>
         <br />
-        The measurements, nutritional status and beneficiary details on this record are deleted from {" "}
-        {school.name}'s student records — and, for a record the school encoded from the Teacher Portal, from the
-        division's records server as well. <strong style={{ color: t.text }}>This cannot be undone.</strong>
+        The record leaves {school.name}'s active list and moves to Trash with its measurements intact. It stays
+        recoverable until the Division Office opens the next school year, when the trash is emptied permanently.
       </ConfirmDialog>
     </div>
   );
 }
 
+// ── Trash ─────────────────────────────────────────────────────────────────────
+function TrashPanel({ trash, schools }: { trash: TrashedRecord[]; schools: School[] }) {
+  const t = useT();
+  const [q, setQ] = useState("");
+  const schoolName = (id: string) => schools.find(s => s.id === id)?.name ?? "Unknown school";
+  const needle = q.trim().toLowerCase();
+  const rows = trash.filter(r =>
+    !needle || `${r.name} ${r.gradeLevel} ${r.period} ${schoolName(r.schoolId)}`.toLowerCase().includes(needle),
+  );
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-lg font-semibold" style={{ color: t.text }}>Trash</h1>
+          <p className="text-xs mt-0.5" style={{ color: t.dim }}>
+            {trash.length} deleted learner record{trash.length === 1 ? "" : "s"} · recoverable until the next school year starts
+          </p>
+        </div>
+        <input
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder="Search learner, school or grade…"
+          className="text-sm px-3 py-2 rounded-sm outline-none"
+          style={{ background: t.surface, color: t.text, border: `1px solid ${t.border}`, minWidth: 260 }}
+        />
+      </div>
+
+      <div style={{ border: `1px solid ${t.border}`, background: t.surface, borderLeft: `3px solid ${t.warning}`, padding: "12px 15px", fontSize: 11.5, lineHeight: 1.6, color: t.sub }}>
+        A deleted record leaves the active Student Records, Summary Table and Analytics but keeps every measurement here.
+        Choose <strong style={{ color: t.text }}>Restore</strong> to put it back. When the Division Office opens a new school
+        year, the trash is emptied permanently.
+      </div>
+
+      {rows.length === 0 ? (
+        <div style={{ border: `1px solid ${t.border}`, background: t.surface, padding: "40px 20px", textAlign: "center" }}>
+          <p className="text-sm" style={{ color: t.sub }}>{trash.length === 0 ? "The trash is empty." : "No deleted record matches that search."}</p>
+        </div>
+      ) : (
+        <div style={{ border: `1px solid ${t.border}`, background: t.surface }} className="overflow-x-auto">
+          <table className="w-full text-xs min-w-[760px] border-collapse">
+            <thead>
+              <tr style={{ background: t.surfaceDeep, borderBottom: `1px solid ${t.border}` }}>
+                {["Learner", "School", "Grade / Period", "Deleted", ""].map(h => (
+                  <th key={h} className="px-3 py-2.5 text-left text-[9px] tracking-widest uppercase" style={{ color: t.dim }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.id} style={{ borderBottom: `1px solid ${t.surfaceDeep}` }}>
+                  <td className="px-3 py-2.5" style={{ color: t.text }}>
+                    <div style={{ fontWeight: 500 }}>{r.name || "Unnamed learner"}</div>
+                    <div style={{ color: t.faint, fontSize: 10 }}>{r.schoolId} · {r.sy}</div>
+                  </td>
+                  <td className="px-3 py-2.5" style={{ color: t.sub }}>{schoolName(r.schoolId)}</td>
+                  <td className="px-3 py-2.5" style={{ color: t.sub }}>{r.gradeLevel || "—"} · {r.period}</td>
+                  <td className="px-3 py-2.5" style={{ color: t.dim }}>
+                    {r.deletedAt ? shortDate(r.deletedAt) : "—"}
+                    {r.deletedBy ? <div style={{ color: t.faint, fontSize: 10 }}>{r.deletedBy}</div> : null}
+                  </td>
+                  <td className="px-3 py-2.5 text-right">
+                    <button
+                      onClick={() => restoreRecord(r.id)}
+                      className="px-3 py-1.5 text-[11px] rounded-sm cursor-pointer border transition-colors"
+                      style={{ borderColor: t.accent + "55", color: t.accent, background: t.accentBg }}
+                    >
+                      Restore
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Summary Table ─────────────────────────────────────────────────────────────
-function SummaryTable({ students, school }: { students:Student[]; school:School }) {
+function SummaryTable({ students, school, activeSy }: { students:Student[]; school:School; activeSy:string }) {
   const t = useT();
   const [period, setPeriod] = useState<Period>("Endline");
   const isSpedSchool = school.name === SPED_SCHOOL_NAME;
   const [cohort, setCohort] = useState<"All"|"Regular"|"SPED">("All");
   const [exporting, setExporting] = useState(false);
+  const { extras, setExtra } = useForm2Extras(school.id, period);
 
   const isSpedGrade = (g: string) => g.startsWith("SPED");
   const allGrades = getGrades(school);
@@ -1907,12 +1886,6 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
     f.filter(s=>(grade===null||inGrade(s.gradeLevel,grade))&&(sex===null||s.sex===sex)&&s.hfaStatus===st).length;
   const cntFlag = (grade:GradeLevel|null, sex:Sex|null, field:keyof Student, val:string) =>
     f.filter(s=>(grade===null||inGrade(s.gradeLevel,grade))&&(sex===null||s.sex===sex)&&s[field]===val).length;
-  /** Learners in this row with any of these Yes/No fields answered "Yes". */
-  const cntAny = (grade:GradeLevel|null, sex:Sex|null, fields:(keyof Student)[]) =>
-    f.filter(s=>(grade===null||inGrade(s.gradeLevel,grade))&&(sex===null||s.sex===sex)&&fields.some(k=>s[k]==="Yes")).length;
-  const N = (v:number, color?:string) => (
-    <td className="px-2 py-2 text-center text-xs" style={{ fontFamily:"'JetBrains Mono',monospace", color:v===0?t.faint:(color??t.accent) }}>{v}</td>
-  );
   const sx = (lbl:"M"|"F"|"Total"): Sex|null => lbl==="Total"?null:lbl;
 
   /**
@@ -1929,14 +1902,21 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
           sex: lbl,
           bmi: BMI_STATUSES.map(st=>cntBMI(grade,s,st)),
           hfa: HFA_STATUSES.map(st=>cntHFA(grade,s,st)),
-          pregnantYoung: cntAny(grade,s,["pregnant","hasYoungChildren"]),
+          pregnantYoung: f.filter(st =>
+            (grade===null||inGrade(st.gradeLevel,grade)) &&
+            (s===null||st.sex===s) &&
+            countsAsPregnantOrYoung(st),
+          ).length,
           dewormed: cntFlag(grade,s,"dewormed","Yes"),
           fourPs: cntFlag(grade,s,"fourPs","Yes"),
           sbfp: cntFlag(grade,s,"sbfpPreviousYears","Yes"),
+          atRisk: manualTotal(extras, grades, grade, lbl, "atRisk"),
+          ips: manualTotal(extras, grades, grade, lbl, "ips"),
         };
       });
     return [...grades.flatMap(g => perGrade(g, g)), ...perGrade(null, "GRAND TOTAL")];
   };
+  const summaryRows = summaryMatrix();
 
   /** School year printed on the Form 2 export — the one most of these records use. */
   const syForExport = () => {
@@ -1953,7 +1933,7 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
         <div>
           <h1 className="text-lg font-semibold" style={{ color:t.text }}>Summary Table</h1>
           <p className="text-xs mt-0.5" style={{ color:t.dim }}>
-            {school.name} — SY 2025–2026
+            {school.name} — SY {formatSchoolYear(activeSy)}
             {isSpedSchool && (cohort === "All" ? " · SPED merged into grade levels" : ` · ${cohort} only`)}
           </p>
         </div>
@@ -1987,7 +1967,7 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
                     school, period, cohort, sy: syForExport(),
                     bmiStatuses: BMI_STATUSES,
                     hfaStatuses: HFA_STATUSES,
-                    rows: summaryMatrix(),
+                    rows: summaryRows,
                   });
                 } finally { setExporting(false); }
               }}
@@ -2007,67 +1987,17 @@ function SummaryTable({ students, school }: { students:Student[]; school:School 
       </div>
 
       <p className="text-[10px] md:hidden -mb-2" style={{ color: t.dim }}>
-        Swipe the table sideways to see every column →
+        Swipe the form sideways to see every column →
       </p>
-      <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="overflow-x-auto">
-        <table className="text-xs min-w-[860px] w-full border-collapse">
-          <thead>
-            <tr style={{ borderBottom:`1px solid ${t.border}` }}>
-              <th rowSpan={2} className="px-3 py-2 text-left text-[9px] tracking-widest uppercase" style={{ color:t.dim, borderRight:`1px solid ${t.border}` }}>Grade</th>
-              <th rowSpan={2} className="px-2 py-2 text-[9px] tracking-widest uppercase" style={{ color:t.dim, borderRight:`1px solid ${t.border}` }}>Sex</th>
-              <th colSpan={6} className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:t.blue, borderRight:`1px solid ${t.border}` }}>Body Mass Index (BMI)</th>
-              <th colSpan={5} className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:t.lime, borderRight:`1px solid ${t.border}` }}>Height-for-Age (HFA)</th>
-              <th className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:t.orange, borderRight:`1px solid ${t.border}` }}>4P's</th>
-              <th className="px-2 py-2 text-[9px] tracking-widest uppercase text-center" style={{ color:t.orange }}>SBFP</th>
-            </tr>
-            <tr style={{ borderBottom:`1px solid ${t.border}` }}>
-              {["Sev. Wasted","Wasted","Normal","Overweight","Obese","Total","Sev. Stunted","Stunted","Normal","Tall","Total"].map((h,i) => (
-                <th key={`${h}${i}`} className="px-2 py-1.5 text-[8px] tracking-widest uppercase text-center" style={{ color:t.dim, borderRight:`1px solid ${i===5||i===10?t.border:t.surfaceDeep}` }}>{h}</th>
-              ))}
-              <th style={{ borderRight:`1px solid ${t.border}` }} />
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {grades.map((grade,gi) =>
-              (["M","F","Total"] as const).map((lbl,ri) => {
-                const s = sx(lbl);
-                const bmis = BMI_STATUSES.map(st=>cntBMI(grade,s,st));
-                const hfas = HFA_STATUSES.map(st=>cntHFA(grade,s,st));
-                const bT = bmis.reduce((a,b)=>a+b,0), hT = hfas.reduce((a,b)=>a+b,0);
-                const fp = cntFlag(grade,s,"fourPs","Yes"), sb = cntFlag(grade,s,"sbfpPreviousYears","Yes");
-                const isTotal = lbl==="Total";
-                return (
-                  <tr key={`${grade}-${ri}`} style={{ borderBottom:`1px solid ${isTotal?t.border:t.surfaceDeep}`, background:isTotal?t.surfaceDeep:"transparent" }}
-                    onMouseEnter={e=>{ if(!isTotal) e.currentTarget.style.background=t.hover; }} onMouseLeave={e=>{ e.currentTarget.style.background=isTotal?t.surfaceDeep:"transparent"; }}>
-                    {ri===0 && <td rowSpan={3} className="px-3 py-2 text-xs font-medium align-middle" style={{ color:t.sub, borderRight:`1px solid ${t.border}` }}>{grade}</td>}
-                    <td className="px-2 py-2 text-center text-xs" style={{ color:isTotal?t.danger:t.dim, fontWeight:isTotal?600:400, borderRight:`1px solid ${t.border}` }}>{lbl}</td>
-                    {bmis.map((v,i)=>N(v))}{N(bT,t.blue)}
-                    {hfas.map((v,i)=>N(v))}{N(hT,t.lime)}
-                    {N(fp,t.orange)}{N(sb,t.orange)}
-                  </tr>
-                );
-              })
-            )}
-            {(["M","F","Total"] as const).map(lbl => {
-              const s = sx(lbl);
-              const bmis = BMI_STATUSES.map(st=>cntBMI(null,s,st));
-              const hfas = HFA_STATUSES.map(st=>cntHFA(null,s,st));
-              const bT = bmis.reduce((a,b)=>a+b,0), hT = hfas.reduce((a,b)=>a+b,0);
-              const fp = cntFlag(null,s,"fourPs","Yes"), sb = cntFlag(null,s,"sbfpPreviousYears","Yes");
-              return (
-                <tr key={`grand-${lbl}`} style={{ borderBottom:`1px solid ${t.border}`, background:t.grandBg }}>
-                  {lbl==="M" && <td rowSpan={3} className="px-3 py-2 text-xs font-semibold align-middle" style={{ color:t.accent, borderRight:`1px solid ${t.border}` }}>GRAND TOTAL</td>}
-                  <td className="px-2 py-2 text-center text-xs font-semibold" style={{ color:t.danger, borderRight:`1px solid ${t.border}` }}>{lbl}</td>
-                  {bmis.map((v,i)=>N(v))}{N(bT,t.blue)}
-                  {hfas.map((v,i)=>N(v))}{N(hT,t.lime)}
-                  {N(fp,t.orange)}{N(sb,t.orange)}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+
+      <Form2Sheet
+        school={school}
+        period={period}
+        cohort={cohort}
+        sy={activeSy}
+        rows={summaryRows}
+        onExtraChange={(grade, sex, patch) => setExtra(grade, sex, patch)}
+      />
     </div>
   );
 }
@@ -2203,9 +2133,27 @@ export default function App() {
   const [view, setView] = useState<View>("district");
   const [selectedSchool, setSelectedSchool] = useState<School|null>(null);
   const [students, setStudents] = useState<Student[]>([]);
-  const [schools, setSchools] = useState<School[]>([...INIT_ES, ...INIT_HS]);
   const [feedbacks, setFeedbacks] = useState<SchoolFeedback[]>([]);
+  /** A refused school-list write (rename, add, remove) shown above the console. */
+  const [schoolError, setSchoolError] = useState("");
   const [editingStudent, setEditingStudent] = useState<Student|null>(null);
+  /** Feedback ids already seen; null until the browser has restored the list. */
+  const [seenFeedback, setSeenFeedback] = useState<Set<string> | null>(null);
+  const announcedFeedback = useRef(new Set<string>());
+  const [feedbackToast, setFeedbackToast] = useState<{ entry: SchoolFeedback; count: number } | null>(null);
+
+  // The workbook engine is a large chunk only an export needs: warm it in the
+  // background so the first Form 1A/2 download does not wait for it.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const warm = () => void import("@/lib/sbfp-export");
+    if ("requestIdleCallback" in window) {
+      const id = window.requestIdleCallback(warm, { timeout: 3000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = globalThis.setTimeout(warm, 2000);
+    return () => globalThis.clearTimeout(id);
+  }, []);
 
   // ── The teacher website's side of the loop ──────────────────────────────────
   // Which Division Office account is signed in, and the school rows the server
@@ -2214,15 +2162,15 @@ export default function App() {
   const access = useAccess();
   const teacherData = access.store;
 
-  // A teacher's profile IS her school's SBFP form header, so what she saves on
-  // `/teacher` is folded into the district's school list here.
-  useEffect(() => {
+  // The school list is the database's, and a teacher's profile IS her school's
+  // SBFP form header — so what she saves on `/teacher` is folded in here rather
+  // than duplicated in local state.
+  const schools = useMemo<School[]>(() => {
     const profiles = teacherData.profiles;
-    if (Object.keys(profiles).length === 0) return;
-    setSchools(prev => prev.map(s => {
+    return teacherData.schools.map(s => {
       const p = profiles[s.id];
       if (!p) return s;
-      const next: School = {
+      return {
         ...s,
         division: p.division,
         cityMunicipalityBarangay: p.cityMunicipalityBarangay,
@@ -2232,34 +2180,83 @@ export default function App() {
         dateStartFeeding: p.dateStartFeeding,
         lastMileSchool: p.lastMileSchool,
       };
-      return SCHOOL_HEADER_KEYS.every(key => next[key] === s[key]) ? s : next;
-    }));
-  }, [teacherData.profiles]);
+    });
+  }, [teacherData.schools, teacherData.profiles]);
 
   const teacherRecords = teacherData.records;
   const teacherFeedbacks = teacherData.feedbacks;
 
+  // Starting a new school year swaps the workspace underneath these screens.
+  // The console keeps a small local list for rows it is still editing; clear it
+  // so last year's rows cannot appear in the new year while the reload lands.
+  const loadedSy = useRef<string | null>(null);
+  useEffect(() => {
+    if (!teacherData.hydrated) return;
+    if (loadedSy.current === null) {
+      loadedSy.current = teacherData.activeSy;
+      return;
+    }
+    if (loadedSy.current !== teacherData.activeSy) {
+      loadedSy.current = teacherData.activeSy;
+      setStudents([]);
+      setFeedbacks([]);
+    }
+  }, [teacherData.activeSy, teacherData.hydrated]);
+
   /**
-   * School-list writes. A school that a teacher has registered keeps its form
-   * header on `/teacher`, so when the district edits those fields they are
-   * written through to her profile too — otherwise the next profile sync would
-   * put her values back and silently undo the district's edit.
+   * School-list writes, all through the database: a rename or a new school is a
+   * `sbfp_schools` row, and the form header is the school's profile (the same
+   * block the teacher saves on `/teacher`), so neither side can silently undo
+   * the other. The list itself is re-read afterwards rather than patched in
+   * place, so what is on screen is what the server holds.
    */
   const saveSchools = (next: School[]) => {
-    for (const school of next) {
-      const profile = teacherData.profiles[school.id];
-      if (!profile || !SCHOOL_HEADER_KEYS.some(key => school[key] !== profile[key])) continue;
-      saveProfile(school.id, {
-        division: school.division,
-        cityMunicipalityBarangay: school.cityMunicipalityBarangay,
-        schoolIdNumber: school.schoolIdNumber,
-        principal: school.principal,
-        focalPerson: school.focalPerson,
-        dateStartFeeding: school.dateStartFeeding,
-        lastMileSchool: school.lastMileSchool,
-      });
-    }
-    setSchools(next);
+    void (async () => {
+      setSchoolError("");
+      try {
+        const kept = new Set(next.map(s => s.id));
+        for (const school of schools) {
+          if (kept.has(school.id)) continue;
+          const result = await removeSchoolEntry({ data: { id: school.id } });
+          if (!result.ok) throw new Error(result.message);
+        }
+        for (const school of next) {
+          const before = schools.find(s => s.id === school.id);
+          if (!before) {
+            const result = await createSchoolEntry({ data: { name: school.name, type: school.type } });
+            if (!result.ok) throw new Error(result.message);
+            continue;
+          }
+          if (before.name !== school.name || before.type !== school.type) {
+            const result = await updateSchoolEntry({
+              data: { id: school.id, name: school.name, type: school.type },
+            });
+            if (!result.ok) throw new Error(result.message);
+          }
+          // Only the Form 1A/2 header fields are the school's profile; name and
+          // type live on the school row above.
+          const profile = teacherData.profiles[school.id];
+          if (!profile || !SCHOOL_HEADER_KEYS.some(key => school[key] !== profile[key])) continue;
+          await saveSchoolHeader({
+            data: {
+              schoolId: school.id,
+              patch: {
+                division: school.division,
+                cityMunicipalityBarangay: school.cityMunicipalityBarangay,
+                schoolIdNumber: school.schoolIdNumber,
+                principal: school.principal,
+                focalPerson: school.focalPerson,
+                dateStartFeeding: school.dateStartFeeding,
+                lastMileSchool: school.lastMileSchool,
+              },
+            },
+          });
+        }
+      } catch (err) {
+        setSchoolError(err instanceof Error ? err.message : String(err));
+      }
+      access.reload();
+    })();
   };
 
   /** The district's own rows plus everything the schools encoded on `/teacher`. */
@@ -2273,18 +2270,97 @@ export default function App() {
     return [...feedbacks, ...teacherFeedbacks.filter(f => !seen.has(f.id))];
   }, [feedbacks, teacherFeedbacks]);
 
+  /** Remember which feedback the Division Office has already looked at. */
+  const markFeedbackSeen = (ids: string[]) => {
+    setSeenFeedback(previous => {
+      const next = new Set(previous ?? []);
+      let changed = previous === null;
+      for (const id of ids) {
+        if (next.has(id)) continue;
+        next.add(id);
+        changed = true;
+      }
+      if (!changed) return previous;
+      try {
+        window.localStorage.setItem(FEEDBACK_SEEN_KEY, JSON.stringify(Array.from(next).slice(-800)));
+      } catch {
+        // Private mode / quota: the badge still clears for this session.
+      }
+      return next;
+    });
+  };
+
+  // On the first read, restore the seen list. With no list yet, feedback that
+  // was already acknowledged is not news; anything still marked New stays
+  // unread until the Division Office opens the feed.
+  useEffect(() => {
+    if (!teacherData.hydrated || seenFeedback !== null) return;
+    let stored: unknown = null;
+    try {
+      stored = JSON.parse(window.localStorage.getItem(FEEDBACK_SEEN_KEY) ?? "null");
+    } catch {
+      stored = null;
+    }
+    const valid = Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : null;
+    // With no saved list (a new browser), the already-acknowledged feedback is
+    // not news; anything still marked New is, and shows as a badge/notification
+    // until the Division Office opens the feed.
+    setSeenFeedback(new Set(
+      valid ?? teacherData.feedbacks.filter(f => f.status !== "New").map(f => f.id),
+    ));
+  }, [teacherData.hydrated, teacherData.feedbacks, seenFeedback]);
+
+  const unreadFeedback = seenFeedback
+    ? allFeedbacks.filter(f => !seenFeedback.has(f.id)).length
+    : 0;
+
+  // Announce the newest arrival once. Opening the feed marks everything seen;
+  // the badge stays until then, even after the toast has faded.
+  useEffect(() => {
+    if (seenFeedback === null) return;
+    if (view === "feedback") {
+      markFeedbackSeen(allFeedbacks.map(f => f.id));
+      setFeedbackToast(null);
+      return;
+    }
+    const unseen = allFeedbacks.filter(f => !seenFeedback.has(f.id));
+    const latest = unseen.find(f => !announcedFeedback.current.has(f.id));
+    if (!latest) return;
+    announcedFeedback.current.add(latest.id);
+    setFeedbackToast({ entry: latest, count: unseen.length });
+  }, [allFeedbacks, seenFeedback, view]);
+
+  useEffect(() => {
+    if (!feedbackToast) return;
+    const timer = window.setTimeout(() => setFeedbackToast(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [feedbackToast]);
+
   /**
-   * Writes go to whichever side owns the row: learner records and feedback
-   * entered on the teacher website live in the shared store (that is how the
-   * school sees the district's edit and the district's reply), everything else
-   * stays in this component's state.
+   * Both sides write through the shared store, so every learner record and
+   * feedback row reaches the database, is stamped with the active school year
+   * by the server, and is kept in that year's archive. The console's local
+   * arrays are just the not-yet-echoed copy for the current render.
    */
   const saveStudents = (next: Student[]) => {
     const byId = new Map(next.map(s => [s.id, s]));
+    // Rows the schools encoded: edits go back through the same server row.
     for (const owned of teacherRecords) {
       const edited = byId.get(owned.id);
       if (!edited) removeRecord(owned.id);
       else if (edited !== owned) updateRecord(owned.id, edited);
+    }
+    // Rows the Division Office encoded: saved to the same table, so they carry
+    // the active year and reach the archive when the year closes. Without this
+    // they only lived in this browser tab.
+    for (const row of next) {
+      if (teacherRecords.some(r => r.id === row.id)) continue;
+      const before = students.find(s => s.id === row.id);
+      if (!before) addRecord(row);
+      else if (before !== row) updateRecord(row.id, row);
+    }
+    for (const row of students) {
+      if (!byId.has(row.id)) removeRecord(row.id);
     }
     const ownedIds = new Set(teacherRecords.map(r => r.id));
     setStudents(next.filter(s => !ownedIds.has(s.id)));
@@ -2297,6 +2373,12 @@ export default function App() {
       if (edited && (edited.status !== owned.status || edited.response !== owned.response)) {
         updateTeacherFeedback(owned.id, { status: edited.status, response: edited.response });
       }
+    }
+    // Feedback the Division Office records itself must be persisted too, for
+    // the same reason: the archive reads the table, not this tab's state.
+    const known = new Set(allFeedbacks.map(f => f.id));
+    for (const entry of next) {
+      if (!known.has(entry.id)) sendFeedback(entry);
     }
     const ownedIds = new Set(teacherFeedbacks.map(f => f.id));
     setFeedbacks(next.filter(f => !ownedIds.has(f.id)));
@@ -2334,7 +2416,9 @@ export default function App() {
         <Sidebar view={view} setView={setView} selectedSchool={selectedSchool} setSelectedSchool={setSelectedSchool}
           themeMode={themeMode} toggleTheme={() => setThemeMode(m=>m==="dark"?"light":"dark")} schools={schools}
           registeredSchools={Object.keys(teacherData.profiles).length}
-          mobileOpen={navOpen} onNavigate={() => setNavOpen(false)} />
+          activeSy={teacherData.activeSy}
+          mobileOpen={navOpen} onNavigate={() => setNavOpen(false)}
+          unreadFeedback={unreadFeedback} trashCount={teacherData.trash.length} />
         <div className="flex-1 min-w-0 flex flex-col min-h-0">
           {/* The sidebar is off-canvas below md, so the console keeps a way in. */}
           <header className="app-topbar md:hidden flex items-center gap-3 px-4 py-3 flex-shrink-0"
@@ -2350,24 +2434,76 @@ export default function App() {
             <div className="ml-auto flex-shrink-0"><UserButton compact /></div>
           </header>
         <main className="flex-1 min-h-0 overflow-y-auto p-4 md:p-8">
+          {schoolError && (
+            <div role="alert" className="mb-4 p-3 text-xs" style={{ border:`1px solid ${t.danger}55`, background:`${t.danger}14`, color:t.danger, borderRadius:4, lineHeight:1.6 }}>
+              {schoolError}
+            </div>
+          )}
           {view==="district" && <DistrictDashboard students={allStudents} schools={schools}
-            feedbacks={allFeedbacks} onOpenFeedbacks={()=>setView("feedback")} />}
+            feedbacks={allFeedbacks} activeSy={teacherData.activeSy} onOpenFeedbacks={()=>setView("feedback")} />}
           {view==="feedback" && <Feedbacks feedbacks={allFeedbacks} setFeedbacks={saveFeedbacks}
             schools={schools} defaultSchool={selectedSchool} />}
           {view==="schools" && <SchoolsList students={allStudents} schools={schools} setSchools={saveSchools}
             setStudents={saveStudents} onSelect={handleSelectSchool} />}
           {view==="accounts" && <AccountsPanel theme={t} schools={schools} accounts={teacherData.accounts}
+            viewerEmail={teacherData.account?.email ?? ""}
             onChanged={() => access.reload()} />}
-          {view==="dashboard" && selectedSchool && <Dashboard students={schoolStudents} school={selectedSchool} />}
+          {view==="years" && <SchoolYears theme={t} schools={schools} activeSy={teacherData.activeSy}
+            onChanged={() => access.reload()} />}
+          {view==="dashboard" && selectedSchool && <Dashboard students={schoolStudents} school={selectedSchool} activeSy={teacherData.activeSy} />}
           {view==="records" && selectedSchool && <StudentRecords students={schoolStudents}
             setStudents={ss => saveStudents([...allStudents.filter(s=>s.schoolId!==selectedSchool.id),...ss])}
-            school={selectedSchool} setView={setView} onEdit={handleEdit} />}
+            school={selectedSchool} setView={setView} onEdit={handleEdit} activeSy={teacherData.activeSy} />}
           {view==="entry" && selectedSchool && <DataEntry students={allStudents} setStudents={saveStudents}
-            school={selectedSchool} setView={setView} editingStudent={editingStudent} clearEditing={clearEditing} />}
-          {view==="table" && selectedSchool && <SummaryTable students={schoolStudents} school={selectedSchool} />}
+            school={selectedSchool} setView={setView} editingStudent={editingStudent} clearEditing={clearEditing}
+            activeSy={teacherData.activeSy} />}
+          {view==="table" && selectedSchool && <SummaryTable students={schoolStudents} school={selectedSchool} activeSy={teacherData.activeSy} />}
           {view==="analytics" && selectedSchool && <Analytics students={schoolStudents} school={selectedSchool} />}
+          {view==="trash" && <TrashPanel trash={teacherData.trash} schools={schools} />}
         </main>
         </div>
+
+        {feedbackToast && (() => {
+          const from = schools.find(s => s.id === feedbackToast.entry.schoolId)?.name ?? "a school";
+          return (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                position: "fixed", right: 18, bottom: 18, zIndex: 60,
+                width: "min(390px, calc(100vw - 36px))",
+                background: t.surface, color: t.text,
+                border: `1px solid ${t.accent}66`, borderLeft: `4px solid ${t.accent}`,
+                borderRadius: 6, padding: "13px 14px",
+                boxShadow: "0 12px 34px rgba(0,0,0,0.35)",
+              }}
+            >
+              <div className="flex items-start gap-3">
+                <span style={{ fontSize: 18, color: t.accent }}>✉</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[9px] tracking-widest uppercase" style={{ color: t.accent }}>
+                    New feedback{feedbackToast.count > 1 ? ` · ${feedbackToast.count} waiting` : ""}
+                  </div>
+                  <div className="text-sm font-semibold mt-1" style={{ color: t.text }}>{from}</div>
+                  <p className="text-xs mt-1" style={{ color: t.sub, lineHeight: 1.5 }}>
+                    {feedbackToast.entry.message.length > 130
+                      ? `${feedbackToast.entry.message.slice(0, 130)}…`
+                      : feedbackToast.entry.message}
+                  </p>
+                  <button
+                    onClick={() => { setView("feedback"); setNavOpen(false); setFeedbackToast(null); }}
+                    className="text-xs mt-2.5 cursor-pointer"
+                    style={{ color: t.accent, fontWeight: 600 }}
+                  >
+                    Open feedbacks →
+                  </button>
+                </div>
+                <button aria-label="Dismiss notification" onClick={() => setFeedbackToast(null)}
+                  className="cursor-pointer text-sm" style={{ color: t.dim }}>✕</button>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </ThemeCtx.Provider>
   );

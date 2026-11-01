@@ -14,11 +14,13 @@
  */
 import { useMemo, useState, type CSSProperties } from "react";
 import {
+  changeOwnPassword,
   createTeacherAccount,
   removeTeacherAccount,
   resetAccountPassword,
   updateTeacherAccount,
 } from "@/lib/sbfp-api";
+import { signOut } from "@/lib/auth/client";
 import { generateTempPassword, MIN_PASSWORD_LENGTH } from "@/lib/sbfp-credentials";
 import type { School } from "@/lib/sbfp-shared";
 import type { TeacherProfile } from "@/lib/sbfp-store";
@@ -138,15 +140,103 @@ function Card({ t, title, subtitle, action, children }: {
   );
 }
 
+/**
+ * The Division Office's own sign-in.
+ *
+ * Without this card the only way to change the console password was an emailed
+ * reset link, and email delivery is not configured — so the account was stuck
+ * with whatever password it was created with. It is the account that can read
+ * every school's learner records, which made that the most important password
+ * in the app to be able to rotate.
+ *
+ * Saving deletes every session for the account (see `resetPassword` in
+ * `@/lib/sbfp-accounts`), including this one, so it signs out afterwards and
+ * asks for the new password.
+ */
+function SecurityCard({ t, email }: { t: TC; email: string }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const submit = async () => {
+    setError("");
+    if (next.length < MIN_PASSWORD_LENGTH) {
+      setError(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
+      return;
+    }
+    if (next !== again) {
+      setError("The two new passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    const result = await changeOwnPassword({
+      data: { currentPassword: current, newPassword: next },
+    });
+    if (!result.ok) {
+      setBusy(false);
+      setError(result.message);
+      return;
+    }
+    setDone(true);
+    // The server ended every session for this account, so this one is gone too.
+    window.setTimeout(() => void signOut("/"), 1600);
+  };
+
+  return (
+    <Card
+      t={t}
+      title="Your Division Office sign-in"
+      subtitle="This account can read every school's learner records and issue any school's sign-in. Change its password whenever someone who knew it leaves."
+    >
+      <div style={{ fontSize: 12, color: t.sub, marginBottom: 14 }}>
+        Signed in as <span style={{ fontFamily: mono, color: t.text }}>{email || "—"}</span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <label>
+          <span style={{ ...label, color: t.dim }}>Current password</span>
+          <input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} style={input(t)} />
+        </label>
+        <label>
+          <span style={{ ...label, color: t.dim }}>New password</span>
+          <input type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} style={input(t)} />
+        </label>
+        <label>
+          <span style={{ ...label, color: t.dim }}>Repeat new password</span>
+          <input type="password" autoComplete="new-password" value={again} onChange={(e) => setAgain(e.target.value)} style={input(t)} />
+        </label>
+      </div>
+      {error && (
+        <p role="alert" style={{ fontSize: 12.5, color: t.danger, marginTop: 12 }}>{error}</p>
+      )}
+      <div className="flex items-center gap-3 mt-4 flex-wrap">
+        <Btn t={t} tone="accent" onClick={() => void submit()} disabled={busy || done}>
+          {busy ? "Saving…" : "Change password"}
+        </Btn>
+        <span style={{ fontSize: 11.5, color: done ? t.accent : t.dim }}>
+          {done
+            ? "Password changed. Every session was signed out — sign in again with the new password…"
+            : "Saving signs you out on every device, including this one."}
+        </span>
+      </div>
+    </Card>
+  );
+}
+
 export default function AccountsPanel({
   theme: t,
   schools,
   accounts,
+  viewerEmail,
   onChanged,
 }: {
   theme: TC;
   schools: School[];
   accounts: TeacherProfile[];
+  /** The signed-in Division Office account — the one this panel can re-password. */
+  viewerEmail: string;
   onChanged: () => void;
 }) {
   const [creating, setCreating] = useState(false);
@@ -197,6 +287,8 @@ export default function AccountsPanel({
           </Btn>
         </div>
       </div>
+
+      <SecurityCard t={t} email={viewerEmail} />
 
       {slip && <CredentialCard t={t} slip={slip} onClose={() => setSlip(null)} />}
 

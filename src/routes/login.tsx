@@ -72,18 +72,6 @@ const fieldLabel: CSSProperties = {
   fontWeight: 600,
 };
 
-const control: CSSProperties = {
-  width: "100%",
-  fontSize: 14,
-  padding: "11px 12px",
-  borderRadius: 9,
-  border: `1px solid ${T.border}`,
-  background: T.bg,
-  color: T.text,
-  fontFamily: font,
-  outline: "none",
-};
-
 const card: CSSProperties = {
   background: T.surface,
   border: `1px solid ${T.border}`,
@@ -171,8 +159,10 @@ function useEmailSignIn() {
         setError(signInErrorMessage(authError));
         return false;
       }
-      // The workspace is keyed by identity, so make it read again for this one.
-      void syncWorkspace(email.trim().toLowerCase(), true);
+      // Wait for this identity's workspace before handing the button back: the
+      // console can then open with its data already on screen instead of the
+      // form flashing "no account" while the first read is still in flight.
+      await syncWorkspace(email.trim().toLowerCase(), true);
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed.");
@@ -188,11 +178,40 @@ function useEmailSignIn() {
 function AdminLogin() {
   const access = useAccess();
   const { reset } = Route.useSearch();
-  if (access.status === "loading") return <Splash />;
+  const navigate = Route.useNavigate();
+  // The form paints immediately, even while the session and the workspace are
+  // still being read. Once the session resolves, a signed-in administrator is
+  // sent on to the console instead of being shown the form.
   // A reset link wins over the redirect: someone signed in on this browser may
   // still be the person who lost the password.
   if (access.status === "admin" && !reset) return <Navigate to="/" />;
 
+  return (
+    <LoginScreen
+      access={access}
+      resetToken={reset}
+      onResetDone={() => void navigate({ to: "/login", search: {} })}
+    />
+  );
+}
+
+/**
+ * The whole sign-in screen, independent of which route is showing it.
+ *
+ * `/` uses this too, so a signed-out visitor's FIRST HTML response contains
+ * the form — not an empty shell waiting for the client bundle to redirect to
+ * `/login`. A signed-in administrator still lands on the console as soon as
+ * the session read says so.
+ */
+export function LoginScreen({
+  access,
+  resetToken,
+  onResetDone,
+}: {
+  access: ReturnType<typeof useAccess>;
+  resetToken?: string;
+  onResetDone?: () => void;
+}) {
   return (
     <div
       style={{
@@ -288,7 +307,7 @@ function AdminLogin() {
         </div>
 
         <div className="flex flex-col gap-4 order-1 lg:order-2">
-          <AdminPanel access={access} resetToken={reset} />
+          <AdminPanel access={access} resetToken={resetToken} onResetDone={onResetDone} />
           <p style={{ fontSize: 12, color: T.dim, lineHeight: 1.6 }}>
             A school's teacher signs in on the{" "}
             <Link to="/teacher" style={{ color: T.accent, textDecoration: "none" }}>
@@ -305,12 +324,13 @@ function AdminLogin() {
 function AdminPanel({
   access,
   resetToken,
+  onResetDone,
 }: {
   access: ReturnType<typeof useAccess>;
   resetToken: string | undefined;
+  onResetDone?: () => void;
 }) {
   const hasAdmin = useHasAdminAccount();
-  const navigate = Route.useNavigate();
   const { busy, error, setError, signIn } = useEmailSignIn();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -337,18 +357,10 @@ function AdminPanel({
               setEmail(usedEmail);
               setPassword("");
               setResetNote(`Password updated for ${usedEmail}. Sign in with the new one.`);
-              void navigate({ to: "/login", search: {} });
+              onResetDone?.();
             }}
           />
         </div>
-      </div>
-    );
-  }
-
-  if (hasAdmin === null) {
-    return (
-      <div style={card}>
-        <p style={{ fontSize: 13, color: T.sub }}>Checking the Division Office account…</p>
       </div>
     );
   }
@@ -396,7 +408,7 @@ function AdminPanel({
     );
   }
 
-  if (!hasAdmin) {
+  if (hasAdmin === false) {
     return (
       <div style={card}>
         <div
@@ -438,7 +450,7 @@ function AdminPanel({
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
                   placeholder="e.g. Division SBFP Coordinator"
-                  style={control}
+                  className="login-control"
                 />
               </Field>
             </div>
@@ -610,7 +622,8 @@ function SignInForm({
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="division@depedurdaneta.gov.ph"
-          style={control}
+          className="login-control"
+          suppressHydrationWarning
         />
       </Field>
       <Field text="Password">
@@ -621,7 +634,8 @@ function SignInForm({
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="••••••••"
-            style={control}
+            className="login-control"
+            suppressHydrationWarning
           />
           <button
             type="button"
@@ -707,7 +721,7 @@ function ForgotPasswordForm({
             setSent(null);
           }}
           placeholder="division@depedurdaneta.gov.ph"
-          style={control}
+          className="login-control"
         />
       </Field>
 
@@ -850,7 +864,7 @@ function ResetPasswordForm({
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Your new password"
-            style={control}
+            className="login-control"
           />
           {showButton}
         </div>
@@ -862,7 +876,7 @@ function ResetPasswordForm({
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
           placeholder="Repeat the password"
-          style={control}
+          className="login-control"
         />
       </Field>
 
@@ -933,7 +947,7 @@ function BootstrapForm({
           value={fullName}
           onChange={(e) => setFullName(e.target.value)}
           placeholder="Division SBFP Coordinator"
-          style={control}
+          className="login-control"
         />
       </Field>
       <Field text="Email">
@@ -942,7 +956,7 @@ function BootstrapForm({
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="division@depedurdaneta.gov.ph"
-          style={control}
+          className="login-control"
         />
       </Field>
       <Field text="Password" hint="At least 8 characters. Keep it safe — it is this console's key.">
@@ -951,7 +965,7 @@ function BootstrapForm({
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="••••••••"
-          style={control}
+          className="login-control"
         />
       </Field>
       {error && <Notice tone="error">{error}</Notice>}
@@ -959,32 +973,6 @@ function BootstrapForm({
         <Submit busy={creating || busy}>Create the account and sign in</Submit>
       </div>
     </form>
-  );
-}
-
-function Splash() {
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: T.bg,
-        color: T.dim,
-        fontFamily: font,
-        display: "grid",
-        placeItems: "center",
-      }}
-    >
-      <div className="text-center">
-        <img
-          src="/school-health-wheel.svg"
-          alt=""
-          width={40}
-          height={40}
-          style={{ margin: "0 auto", opacity: 0.45 }}
-        />
-        <p style={{ fontSize: 13, marginTop: 14 }}>Opening the Division Console…</p>
-      </div>
-    </div>
   );
 }
 

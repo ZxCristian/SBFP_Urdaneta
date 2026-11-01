@@ -207,11 +207,16 @@ export const auth = betterAuth({
     },
   },
 
-  // Cache the session in the short-lived signed `session_data` cookie so reads
-  // (incl. the client's `/get-session`) skip the DB — this shrinks the "loading"
-  // window and reduces auth flicker. See the `auth` skill for the full
-  // flicker-prevention guidance (gate on `isPending`; SSR the session).
-  session: { cookieCache: { enabled: true, maxAge: 300 } },
+  // No `cookieCache`: every session read checks the `session` row.
+  //
+  // The cache used to hold a signed copy of the session in a cookie for five
+  // minutes, which made reads cheaper — but it also meant a session that had
+  // just been deleted still authenticated for up to five minutes. Changing a
+  // password deletes every session for the account (`resetPassword` in
+  // `@/lib/sbfp-accounts`), and that promise — "signs you out everywhere" — has
+  // to hold on the next request, not eventually. The console is a low-traffic
+  // district tool, so the extra session lookup per request is the right trade.
+  session: { cookieCache: { enabled: false } },
 
   // Local email/password — toggled only via `./email-password` (not a plugin).
   ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true } } : {}),

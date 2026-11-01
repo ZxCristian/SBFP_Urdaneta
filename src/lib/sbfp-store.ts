@@ -29,13 +29,22 @@ import {
   fetchWorkspace,
   removeLearnerRecord,
   replyToFeedback,
+  restoreLearnerRecord,
   saveLearnerRecord,
   saveSchoolHeader,
+  saveSummaryExtra as saveSummaryExtraApi,
   sendSchoolFeedback,
 } from "./sbfp-api";
 // Type-only, so this import is erased and sbfp-app.tsx -> sbfp-store.ts stays
 // a one-way runtime edge (no import cycle).
-import type { SchoolFeedback, SchoolFormDetails, Student } from "@/sbfp-app";
+import type {
+  School,
+  SchoolFeedback,
+  SchoolFormDetails,
+  Student,
+  SummaryExtra,
+  TrashedRecord,
+} from "@/lib/sbfp-domain";
 
 /** The pre-accounts store's key; read once to carry a school's work forward. */
 const LEGACY_STORAGE_KEY = "sbfp.teachers.v1";
@@ -82,7 +91,7 @@ export interface TeacherProfile extends SchoolFormDetails {
 
 /** The four fields the school must supply — the rest are optional extras. */
 export const REQUIRED_PROFILE_FIELDS: [keyof TeacherProfile, string][] = [
-  ["principal", "Name of Principal"],
+  ["principal", "Name of Principal / School Head"],
   ["focalPerson", "Name of Feeding Focal Person"],
   ["schoolIdNumber", "School ID Number"],
   ["cityMunicipalityBarangay", "City/Municipality/Barangay"],
@@ -91,20 +100,35 @@ export const REQUIRED_PROFILE_FIELDS: [keyof TeacherProfile, string][] = [
 export interface TeacherStoreState {
   /** False until the first server read has come back — the sites show a boot screen until then. */
   hydrated: boolean;
+  /** The server's signature for the rows below — see `sbfp-live.ts`. */
+  version: string;
   /** The email of the account the workspace was loaded for, or null. */
   email: string | null;
   /** The caller's own account, or null when no account has been issued for it. */
   account: SbfpAccount | null;
+  /**
+   * The division's schools, read from the database — the whole list for the
+   * Division Office, only her own school for a teacher. Each carries its SBFP
+   * form header, so the console's school list and the portal's forms print the
+   * same block.
+   */
+  schools: School[];
   /** Every school's header the caller may see, keyed by school id. */
   profiles: Record<string, TeacherProfile>;
   /** The same rows as a list — the Division Office's accounts table. */
   accounts: TeacherProfile[];
   /** The school the signed-in teacher is working on, or null. */
   activeSchoolId: string | null;
+  /** The school year the district is working in (e.g. "2025-2026"). */
+  activeSy: string;
   /** Learner records encoded through the Teacher Portal. */
   records: Student[];
   /** Feedback the schools sent up, with the Division Office's reply merged in. */
   feedbacks: SchoolFeedback[];
+  /** Deleted learner records, kept until the next school year starts. */
+  trash: TrashedRecord[];
+  /** Form 2's hand-entered at-risk / IP counts for the active year. */
+  summaryExtras: SummaryExtra[];
   /** Why the last server write failed, if it did. */
   syncError: string | null;
   /** True while a workspace read is in flight. */
@@ -113,13 +137,18 @@ export interface TeacherStoreState {
 
 const EMPTY: TeacherStoreState = Object.freeze({
   hydrated: false,
+  version: "",
   email: null,
   account: null,
+  schools: [],
   profiles: {},
   accounts: [],
   activeSchoolId: null,
+  activeSy: "2025-2026",
   records: [],
   feedbacks: [],
+  trash: [],
+  summaryExtras: [],
   syncError: null,
   syncing: false,
 });
@@ -241,15 +270,20 @@ export function syncWorkspace(expectedEmail?: string | null, force = false): Pro
       loadedFor = loadedEmail;
       set({
         hydrated: true,
+        version: workspace.version ?? "",
         syncing: false,
         syncError: null,
         email: loadedEmail,
         account,
+        schools: (workspace.schools ?? []) as School[],
         accounts: accounts.filter((a) => a.schoolId).map((a) => profiles[a.schoolId as string]).filter(Boolean),
         profiles,
         activeSchoolId: account?.role === "teacher" ? account.schoolId : null,
+        activeSy: workspace.activeSy,
         records: (workspace.records ?? []) as Student[],
         feedbacks: (workspace.feedbacks ?? []) as SchoolFeedback[],
+        trash: (workspace.trash ?? []) as TrashedRecord[],
+        summaryExtras: (workspace.summaryExtras ?? []) as SummaryExtra[],
       });
       await carryLegacyWorkForward();
     })
@@ -262,11 +296,14 @@ export function syncWorkspace(expectedEmail?: string | null, force = false): Pro
         hydrated: true,
         syncing: false,
         account: null,
+        schools: [],
         accounts: [],
         profiles: {},
         activeSchoolId: null,
         records: [],
         feedbacks: [],
+        trash: [],
+        summaryExtras: [],
         syncError: signedOut ? null : `Could not reach the division server: ${message}`,
       });
     })
@@ -336,7 +373,8 @@ async function carryLegacyWorkForward() {
 // ── Writing back ──────────────────────────────────────────────────────────────
 
 /** Keep a failed write visible instead of pretending it was saved. */
-function reportFailure(err: unknown, what: string) {
+function reportFailure(err: unknown, what: string, rollback?: () => void) {
+  rollback?.();
   const message = err instanceof Error ? err.message : String(err);
   set({ syncError: `${what} was not saved to the division server: ${message}` });
 }
@@ -393,7 +431,13 @@ export function addRecord(record: Student) {
   set({ records: [record, ...state.records] });
   void saveLearnerRecord({ data: { schoolId: record.schoolId, record } })
     .then(ok)
-    .catch((err) => reportFailure(err, "The learner record"));
+    .catch((err) => {
+      // The server refused it, so it does not exist: drop the optimistic row
+      // instead of leaving a learner on screen that no report will ever see.
+      reportFailure(err, "The learner record", () =>
+        set({ records: state.records.filter((r) => r.id !== record.id) }),
+      );
+    });
 }
 
 export function updateRecord(id: string, patch: Partial<Student>) {
@@ -408,11 +452,72 @@ export function updateRecord(id: string, patch: Partial<Student>) {
 
 export function removeRecord(id: string) {
   const record = state.records.find((r) => r.id === id);
-  set({ records: state.records.filter((r) => r.id !== id) });
   if (!record) return;
+  const trashed: TrashedRecord = {
+    ...record,
+    deletedAt: new Date().toISOString(),
+    deletedBy: state.account?.email ?? "",
+  };
+  set({
+    records: state.records.filter((r) => r.id !== id),
+    trash: [trashed, ...state.trash],
+  });
   void removeLearnerRecord({ data: { id } })
     .then(ok)
-    .catch((err) => reportFailure(err, "The learner record"));
+    .catch((err) => {
+      // Nothing was deleted on the server, so put the record back rather than
+      // show it in the trash as though the removal had worked.
+      set({
+        records: [record, ...state.records.filter((r) => r.id !== id)],
+        trash: state.trash.filter((r) => r.id !== id),
+      });
+      reportFailure(err, "The learner record");
+    });
+}
+
+/** Put a record from the trash back on the school's active list. */
+export function restoreRecord(id: string) {
+  const record = state.trash.find((r) => r.id === id);
+  if (!record) return;
+  const previousTrash = state.trash;
+  const previousRecords = state.records;
+  const { deletedAt, deletedBy, ...restored } = record;
+  void deletedAt;
+  void deletedBy;
+  set({
+    trash: state.trash.filter((r) => r.id !== id),
+    records: record.sy === state.activeSy ? [restored, ...state.records] : state.records,
+  });
+  void restoreLearnerRecord({ data: { id } })
+    .then(ok)
+    .catch((err) => {
+      set({ trash: previousTrash, records: previousRecords });
+      reportFailure(err, "The learner record");
+    });
+}
+
+/** Store one Form 2 hand-entered count pair, optimistically for the screen. */
+export function saveSummaryExtra(input: {
+  schoolId: string;
+  period: SummaryExtra["period"];
+  grade: string;
+  sex: "M" | "F";
+  atRisk: number;
+  ips: number;
+}) {
+  const extra: SummaryExtra = { ...input, sy: state.activeSy };
+  const same = (row: SummaryExtra) =>
+    row.schoolId === extra.schoolId &&
+    row.sy === extra.sy &&
+    row.period === extra.period &&
+    row.grade === extra.grade &&
+    row.sex === extra.sex;
+  set({
+    summaryExtras: [...state.summaryExtras.filter((row) => !same(row)), extra],
+  });
+  void saveSummaryExtraApi({ data: input })
+    .then(ok)
+    .catch((err) => reportFailure(err, "The Form 2 count"));
 }
 
 export function sendFeedback(entry: SchoolFeedback) {

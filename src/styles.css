@@ -78,6 +78,29 @@ html {
 }
 
 /*
+ * Sign-in controls. A class rather than an inline style object: the form is
+ * server-rendered so it can paint before the client bundle loads, and React's
+ * server style serialization does not round-trip every inline value (font
+ * family quoting, for one) — which logs a hydration mismatch on the way in.
+ */
+.login-control {
+  width: 100%;
+  font-size: 14px;
+  padding: 11px 12px;
+  border-radius: 9px;
+  border: 1px solid #232323;
+  background: #080808;
+  color: #e2e2e2;
+  font-family: 'Outfit', system-ui, sans-serif;
+  outline: none;
+}
+
+.login-control:focus {
+  border-color: rgba(0, 255, 135, 0.45);
+  box-shadow: 0 0 0 3px rgba(0, 255, 135, 0.1);
+}
+
+/*
  * Table row actions — All Schools (Open / Edit / Delete) and Student Records
  * (Edit / Delete).
  *

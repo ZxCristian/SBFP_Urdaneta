@@ -179,6 +179,18 @@ async function createSql(): Promise<Sql> {
         "or a server route loader, never from client code.",
     );
   }
+  if (dbSource === "pglite" && process.env.NODE_ENV === "production") {
+    // The PGLite fallback is an in-memory database for the sandbox preview. On a
+    // deployed server it would hand every instance its own empty database — the
+    // console would show the first-run card and accept an admin, then lose the
+    // account on the next request. Refuse loudly instead, so a missing
+    // production `SUPABASE_DB_URL` is a visible configuration error, not silent
+    // data loss.
+    throw new Error(
+      "No production database is configured. Set SUPABASE_DB_URL (or DATABASE_URL) " +
+        "in the production environment to the Supabase connection string, then deploy again.",
+    );
+  }
   return dbSource === "postgres" ? createPostgresSql() : createPgliteSql();
 }
 

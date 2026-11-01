@@ -30,27 +30,44 @@ describe("databaseUrlFromEnv", () => {
 });
 
 describe("withSslMode", () => {
-  it("adds sslmode=require to a Supabase direct connection", () => {
+  it("adds sslmode=no-verify to a Supabase direct connection", () => {
     const url =
       "postgresql://postgres.abcdefgh:p%40ss@db.abcdefgh.supabase.co:5432/postgres";
-    assert.equal(withSslMode(url), `${url}?sslmode=require`);
+    assert.equal(withSslMode(url), `${url}?sslmode=no-verify`);
   });
 
-  it("adds sslmode=require to a Supabase pooler connection", () => {
+  it("adds sslmode=no-verify to a Supabase pooler connection", () => {
     const url =
       "postgresql://postgres.abcdefgh:p%40ss@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres";
-    assert.equal(withSslMode(url), `${url}?sslmode=require`);
+    assert.equal(withSslMode(url), `${url}?sslmode=no-verify`);
   });
 
   it("appends with & when the URL already has a query", () => {
     assert.equal(
       withSslMode("postgresql://user@db.x.supabase.co:5432/postgres?application_name=sbfp"),
-      "postgresql://user@db.x.supabase.co:5432/postgres?application_name=sbfp&sslmode=require",
+      "postgresql://user@db.x.supabase.co:5432/postgres?application_name=sbfp&sslmode=no-verify",
     );
   });
 
-  it("keeps an explicit sslmode the operator chose", () => {
+  it("rewrites require/prefer, which pg 8 would verify and fail on Supabase's CA", () => {
+    assert.equal(
+      withSslMode("postgresql://user@db.x.supabase.co:5432/postgres?sslmode=require"),
+      "postgresql://user@db.x.supabase.co:5432/postgres?sslmode=no-verify",
+    );
+    assert.equal(
+      withSslMode("postgresql://user@db.x.supabase.co:5432/postgres?sslmode=prefer&application_name=x"),
+      "postgresql://user@db.x.supabase.co:5432/postgres?sslmode=no-verify&application_name=x",
+    );
+  });
+
+  it("keeps an explicit verify-full sslmode", () => {
     const url = "postgresql://user@db.x.supabase.co:5432/postgres?sslmode=verify-full";
+    assert.equal(withSslMode(url), url);
+  });
+
+  it("leaves a libpq-compatible require string alone", () => {
+    const url =
+      "postgresql://user@db.x.supabase.co:5432/postgres?sslmode=require&uselibpqcompat=true";
     assert.equal(withSslMode(url), url);
   });
 
@@ -84,6 +101,6 @@ describe("pgPoolOptions", () => {
 
   it("normalizes a Supabase connection string", () => {
     const options = pgPoolOptions("postgresql://user@db.x.supabase.co:5432/postgres");
-    assert.match(options.connectionString, /\?sslmode=require$/);
+    assert.match(options.connectionString, /\?sslmode=no-verify$/);
   });
 });
