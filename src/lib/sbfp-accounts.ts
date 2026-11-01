@@ -31,6 +31,7 @@ import {
   normalizeEmail,
   passwordProblem,
 } from "./sbfp-credentials.ts";
+import { FEEDBACK_CATEGORIES, FEEDBACK_STATUSES } from "./sbfp-domain.ts";
 import type {
   FeedbackCategory,
   FeedbackStatus,
@@ -452,19 +453,52 @@ export async function updateAccount(
     }
   }
 
+  const fullName = patch.fullName === undefined ? current.fullName : patch.fullName.trim();
+  const position = patch.position === undefined ? current.position : patch.position.trim();
+  const contact = patch.contact === undefined ? current.contact : patch.contact.trim();
   await sql`
     update sbfp_accounts set
-      full_name = ${patch.fullName === undefined ? current.fullName : patch.fullName.trim()},
-      position = ${patch.position === undefined ? current.position : patch.position.trim()},
-      contact = ${patch.contact === undefined ? current.contact : patch.contact.trim()},
+      full_name = ${fullName},
+      position = ${position},
+      contact = ${contact},
       school_id = ${schoolId},
       status = ${patch.status ?? current.status},
       updated_at = now()
     where lower(email) = ${normalizeEmail(email)}
   `;
+  if (patch.fullName !== undefined) {
+    // The auth identity's display name is separate from `sbfp_accounts`; keep
+    // them in step so the signed-in user menu does not show the old name.
+    await sql`
+      update "user" set "name" = ${fullName || current.email}, "updatedAt" = now()
+      where lower("email") = ${normalizeEmail(email)}
+    `;
+  }
   const updated = await findAccountByEmail(sql, email);
   if (!updated) throw new AccountError("not_found", "That account no longer exists.");
   return updated;
+}
+
+/** A teacher may edit her own name and contact details, but never her role or school. */
+export async function updateOwnTeacherDetails(
+  sql: Sql,
+  email: string,
+  patch: { fullName?: string; position?: string; contact?: string },
+): Promise<AccountRow> {
+  const current = await findAccountByEmail(sql, email);
+  if (!current) throw new AccountError("not_found", "That account no longer exists.");
+  if (current.role !== "teacher") {
+    throw new AccountError("forbidden", "Only a Teacher Portal account can edit these details.");
+  }
+  const fullName = (patch.fullName ?? current.fullName).trim();
+  if (!fullName) {
+    throw new AccountError("incomplete_profile", "Your name is required on the SBFP forms.");
+  }
+  return updateAccount(sql, email, {
+    fullName: fullName.slice(0, 120),
+    position: (patch.position ?? current.position).trim().slice(0, 120),
+    contact: (patch.contact ?? current.contact).trim().slice(0, 160),
+  });
 }
 
 /**
@@ -591,9 +625,6 @@ export async function changeOwnPassword(
 
 /** How long an emailed reset link stays usable. */
 export const RESET_LINK_MINUTES = 30;
-
-/** One request per minute: repeat clicks must not send a pile of email. */
-const RESET_COOLDOWN_SECONDS = 60;
 
 /**
  * Hash of the token that goes in the email. The token is 256 bits from the OS
@@ -1170,18 +1201,27 @@ export async function insertFeedback(
   sentBy?: string,
 ): Promise<void> {
   const activeSy = await getActiveSchoolYear(sql);
+  const message = entry.message.trim();
+  if (!message) throw new AccountError("invalid_record", "Write a message before sending feedback.");
+  const category = FEEDBACK_CATEGORIES.includes(entry.category) ? entry.category : "Other";
+  const status = FEEDBACK_STATUSES.includes(entry.status) ? entry.status : "New";
+  const ratingNumber = Math.trunc(Number(entry.rating));
+  const rating = Number.isFinite(ratingNumber) ? Math.min(5, Math.max(0, ratingNumber)) : 0;
+  const author = entry.author.trim().slice(0, 120) || "School";
+  const role = entry.role.trim().slice(0, 120);
+  const createdAt = /^\d{4}-\d{2}-\d{2}$/.test(entry.createdAt)
+    ? entry.createdAt
+    : new Date().toISOString().slice(0, 10);
+  const response = (entry.response ?? "").trim().slice(0, 4000);
   await sql`
     insert into sbfp_feedback
       (id, school_id, sy, author, role, category, rating, message, created_at, status, response, origin, sent_by, updated_at)
     values (
-      ${entry.id}, ${schoolId}, ${activeSy}, ${entry.author}, ${entry.role}, ${entry.category},
-      ${entry.rating}, ${entry.message}, ${entry.createdAt}, ${entry.status},
-      ${entry.response ?? ""}, ${entry.origin ?? null}, ${sentBy ?? null}, now()
+      ${entry.id}, ${schoolId}, ${activeSy}, ${author}, ${role}, ${category},
+      ${rating}, ${message.slice(0, 4000)}, ${createdAt}, ${status},
+      ${response}, ${entry.origin ?? null}, ${sentBy ?? null}, now()
     )
-    on conflict (id) do update set
-      status = excluded.status,
-      response = excluded.response,
-      updated_at = now()
+    on conflict (id) do nothing
   `;
 }
 

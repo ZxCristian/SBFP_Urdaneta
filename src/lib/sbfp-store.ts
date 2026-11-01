@@ -31,6 +31,7 @@ import {
   replyToFeedback,
   restoreLearnerRecord,
   saveLearnerRecord,
+  saveOwnTeacherDetails,
   saveSchoolHeader,
   saveSummaryExtra as saveSummaryExtraApi,
   sendSchoolFeedback,
@@ -213,6 +214,12 @@ export const isTeacherFeedback = (f: { id: string }) => f.id.startsWith("tf_");
  */
 let inFlight: Promise<void> | null = null;
 let loadedFor: string | null = null;
+/**
+ * Identifies the newest read. A forced read (after sign-in) can start while the
+ * signed-out boot read is still in flight; the older response must not land on
+ * top of the signed-in workspace when it finally arrives.
+ */
+let readGeneration = 0;
 
 function profileOf(account: SbfpAccount): TeacherProfile | null {
   if (!account.schoolId) return null;
@@ -255,14 +262,21 @@ export function syncWorkspace(expectedEmail?: string | null, force = false): Pro
     loadedFor = null;
     state = { ...EMPTY };
   }
-  if (inFlight) return inFlight;
-  if (!force && loadedFor && loadedFor === target) return Promise.resolve();
+  // A non-forced caller shares an in-flight read. A forced read (right after
+  // sign-in) supersedes whatever started before the session existed, so the
+  // click never waits on the signed-out boot request.
+  if (!force) {
+    if (inFlight) return inFlight;
+    if (loadedFor && loadedFor === target) return Promise.resolve();
+  }
+  const generation = ++readGeneration;
   loadedFor = target;
   // The identity is claimed up front: a read that fails must not leave the site
   // spinning on "loading" forever, and `syncError` carries the reason.
   set({ syncing: true, email: target, hydrated: state.hydrated });
   inFlight = fetchWorkspace()
     .then(async (workspace) => {
+      if (generation !== readGeneration) return;
       const accounts = (workspace.accounts ?? []) as SbfpAccount[];
       const profiles = profilesOf(accounts);
       const account = (workspace.account ?? null) as SbfpAccount | null;
@@ -288,6 +302,9 @@ export function syncWorkspace(expectedEmail?: string | null, force = false): Pro
       await carryLegacyWorkForward();
     })
     .catch((err: unknown) => {
+      if (generation !== readGeneration) return;
+      // Let a later call retry this identity after a transient failure.
+      loadedFor = null;
       // Signed out is not an error: the sites ask for a session first and only
       // then for the workspace.
       const message = err instanceof Error ? err.message : String(err);
@@ -308,13 +325,17 @@ export function syncWorkspace(expectedEmail?: string | null, force = false): Pro
       });
     })
     .finally(() => {
-      inFlight = null;
+      if (generation === readGeneration) inFlight = null;
     });
   return inFlight;
 }
 
 /** Forget everything (sign-out). */
 export function resetWorkspace() {
+  // Invalidate a read that was already in flight: its response belongs to the
+  // identity that just signed out and must not repopulate the store.
+  readGeneration++;
+  inFlight = null;
   loadedFor = null;
   state = { ...EMPTY, hydrated: true };
   for (const listener of Array.from(listeners)) listener();
@@ -421,10 +442,24 @@ export function saveProfile(schoolId: string, patch: Partial<TeacherProfile>) {
   ] as (keyof SchoolFormDetails)[]) {
     if (patch[key] !== undefined) header[key] = patch[key] as never;
   }
-  if (Object.keys(header).length === 0) return;
-  void saveSchoolHeader({ data: { schoolId: target, patch: header } })
+  const writes: Promise<unknown>[] = [];
+  if (Object.keys(header).length > 0) {
+    writes.push(saveSchoolHeader({ data: { schoolId: target, patch: header } }));
+  }
+  // The teacher's own name and contact details live on her account row, not
+  // the school header. Saving only the header used to make those edits look
+  // saved until the next reload, then silently lose them.
+  const details: { fullName?: string; position?: string; contact?: string } = {};
+  if (patch.teacherName !== undefined) details.fullName = patch.teacherName;
+  if (patch.position !== undefined) details.position = patch.position;
+  if (patch.contact !== undefined) details.contact = patch.contact;
+  if (Object.keys(details).length > 0 && state.account?.role === "teacher" && state.account.schoolId === target) {
+    writes.push(saveOwnTeacherDetails({ data: details }));
+  }
+  if (writes.length === 0) return;
+  void Promise.all(writes)
     .then(ok)
-    .catch((err) => reportFailure(err, "The school information"));
+    .catch((err) => reportFailure(err, "Your profile"));
 }
 
 export function addRecord(record: Student) {

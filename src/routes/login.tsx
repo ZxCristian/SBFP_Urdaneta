@@ -611,13 +611,24 @@ function SignInForm({
       onSubmit={(e) => {
         e.preventDefault();
         setError("");
-        void signIn(email.trim(), password);
+        // Read the fields as they are at submit time. React state can still be
+        // empty when a password manager autofills without input events, and the
+        // visible email/password must still be the ones submitted.
+        const fields = new FormData(e.currentTarget);
+        const submittedEmail = String(fields.get("email") ?? "").trim();
+        const submittedPassword = String(fields.get("password") ?? "");
+        // Re-sync state before the request so the controlled fields keep the
+        // autofilled values if the credentials turn out to be wrong.
+        setEmail(submittedEmail);
+        setPassword(submittedPassword);
+        void signIn(submittedEmail, submittedPassword);
       }}
     >
       {title && <div style={{ fontSize: 13, fontWeight: 600, color: T.sub }}>{title}</div>}
       <Field text="Email">
         <input
           type="email"
+          name="email"
           autoComplete="username"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -630,6 +641,7 @@ function SignInForm({
         <div className="flex gap-2">
           <input
             type={show ? "text" : "password"}
+            name="password"
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}

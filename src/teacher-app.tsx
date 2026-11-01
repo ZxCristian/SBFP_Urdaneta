@@ -379,24 +379,27 @@ const bmiTone = (s: string): "good" | "warn" | "danger" | "gold" | "muted" =>
 // here: a teacher signs in with the email and the temporary password she was
 // handed, and lands on her own school.
 
-function TeacherSignIn({ access, notice }: { access: Access; notice?: ReactNode }) {
+function TeacherSignIn({ notice }: { notice?: ReactNode }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const submit = async () => {
+  const submit = async (emailValue: string, passwordValue: string) => {
     setError("");
-    if (!email.trim() || !password) {
+    // Keep the controlled fields in step with an autofilled submission.
+    setEmail(emailValue);
+    setPassword(passwordValue);
+    if (!emailValue.trim() || !passwordValue) {
       setError("Enter the email and password the Division Office gave you.");
       return;
     }
     setBusy(true);
     try {
       const { error: authError } = await authClient.signIn.email({
-        email: email.trim(),
-        password,
+        email: emailValue.trim(),
+        password: passwordValue,
       });
       if (authError) {
         const message = signInErrorMessage(authError);
@@ -410,7 +413,7 @@ function TeacherSignIn({ access, notice }: { access: Access; notice?: ReactNode 
       // Wait for this identity's workspace before releasing the button: the
       // portal can then open on the school's data instead of flashing the form
       // again while the first read is still in flight.
-      await syncWorkspace(email.trim().toLowerCase(), true);
+      await syncWorkspace(emailValue.trim().toLowerCase(), true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed.");
     } finally {
@@ -496,12 +499,19 @@ function TeacherSignIn({ access, notice }: { access: Access; notice?: ReactNode 
               className="flex flex-col gap-4"
               onSubmit={(e) => {
                 e.preventDefault();
-                void submit();
+                // Read the fields at submit time so a password manager's
+                // autofill is accepted even when it did not fire input events.
+                const fields = new FormData(e.currentTarget);
+                void submit(
+                  String(fields.get("email") ?? ""),
+                  String(fields.get("password") ?? ""),
+                );
               }}
             >
               <Field text="Email">
                 <input
                   type="email"
+                  name="email"
                   autoComplete="username"
                   value={email}
                   onChange={(e) => { setEmail(e.target.value); setError(""); }}
@@ -513,6 +523,7 @@ function TeacherSignIn({ access, notice }: { access: Access; notice?: ReactNode 
                 <div className="flex gap-2">
                   <input
                     type={show ? "text" : "password"}
+                    name="password"
                     autoComplete="current-password"
                     value={password}
                     onChange={(e) => { setPassword(e.target.value); setError(""); }}
@@ -1048,7 +1059,7 @@ function DataEntry({
       setPeriodError(false);
       setNameError(false);
     }
-  }, [editing?.id]);
+  }, [editing]);
 
   const grades = getGrades(school);
 
@@ -1102,7 +1113,7 @@ function DataEntry({
       live = false;
       clearTimeout(timer);
     };
-  }, [form.name, form.dateOfBirth, editing?.id]);
+  }, [form.name, form.dateOfBirth, editing]);
 
   /**
    * Same rules as the district console's Data Entry: ages from the date of
@@ -1942,6 +1953,7 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
   const store = useTeacherStore();
   const [cohort, setCohort] = useState<"All" | "Regular" | "SPED">("All");
   const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
   // Open on the period the school actually has records in: a teacher who has
   // just encoded Baseline should not land on an empty Endline table.
   const [chosenPeriod, setPeriod] = useState<Period | null>(null);
@@ -2075,6 +2087,7 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
 
   const exportForm2 = async () => {
     setExporting(true);
+    setExportError("");
     try {
       const { exportSummaryToExcel } = await import("@/lib/sbfp-export");
       await exportSummaryToExcel({
@@ -2086,6 +2099,8 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
         hfaStatuses: HFA_STATUSES,
         rows: summaryRows,
       });
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : "The Form 2 export could not be built.");
     } finally {
       setExporting(false);
     }
@@ -2178,6 +2193,12 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
             <Stat text="Stunted" value={stunted} hint="severely stunted + stunted" />
             <Stat text="Dewormed" value={overall.dewormed} hint={`4P's: ${overall.fourPs}`} />
           </div>
+
+          {exportError && (
+            <p role="alert" style={{ fontSize: 12.5, color: C.danger }}>
+              {exportError}
+            </p>
+          )}
 
           <Form2Sheet
             school={school}
@@ -2277,7 +2298,7 @@ export default function TeacherApp() {
   return (
     <div style={{ minHeight: "100dvh", background: C.bg, color: C.text, fontFamily: font }}>
       <header className="app-topbar" style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, position: "sticky", top: 0, zIndex: 10 }}>
-        <div className="mx-auto px-5" style={{ maxWidth: tab === "summary" || tab === "records" ? 1520 : 1080 }}>
+        <div className="mx-auto px-5" style={{ maxWidth: tab === "summary" ? 1560 : tab === "records" ? 1520 : 1080 }}>
           <div className="flex items-center gap-3 py-3 flex-wrap">
             <a href="/teacher" className="flex items-center gap-3" style={{ textDecoration: "none" }}>
               <img src="/school-health-wheel.svg" alt="" width={36} height={36} />
@@ -2348,7 +2369,6 @@ export default function TeacherApp() {
 
       {!signedIn ? (
         <TeacherSignIn
-          access={access}
           notice={
             access.status === "no-account" || access.status === "admin"
               ? <NoAccountNotice access={access} />
@@ -2366,7 +2386,7 @@ export default function TeacherApp() {
           </Card>
         </div>
       ) : (
-        <main className="mx-auto px-5 py-6" style={{ maxWidth: tab === "summary" || tab === "records" ? 1520 : 1080 }}>
+        <main className="mx-auto px-5 py-6" style={{ maxWidth: tab === "summary" ? 1560 : tab === "records" ? 1520 : 1080 }}>
           {tab === "overview" && <Overview profile={profile} school={school} go={setTab} />}
           {tab === "profile" && <ProfileScreen profile={profile} school={school} />}
           {tab === "entry" && (

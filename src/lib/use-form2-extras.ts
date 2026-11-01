@@ -50,7 +50,7 @@ export function useForm2Extras(schoolId: string, period: Period) {
 
   const [draft, setDraft] = useState<Form2ExtraMap>(base);
   const dirty = useRef(
-    new Map<string, { grade: string; sex: "M" | "F"; period: Period } & Form2Extra>(),
+    new Map<string, { schoolId: string; grade: string; sex: "M" | "F"; period: Period } & Form2Extra>(),
   );
   const timer = useRef<number | undefined>(undefined);
   const context = `${schoolId}|${period}`;
@@ -65,7 +65,10 @@ export function useForm2Extras(schoolId: string, period: Period) {
     dirty.current.clear();
     for (const row of rows) {
       void saveSummaryExtra({
-        schoolId,
+        // The row carries its own school: when a different school is opened
+        // before the debounce fires, the pending edit must stay with the
+        // school it was typed into.
+        schoolId: row.schoolId,
         period: row.period,
         grade: row.grade,
         sex: row.sex,
@@ -95,11 +98,11 @@ export function useForm2Extras(schoolId: string, period: Period) {
 
   const setExtra = (grade: string, sex: "M" | "F", patch: Partial<Form2Extra>) => {
     const key = form2ExtraKey(grade, sex);
-    const dirtyKey = `${period}|${key}`;
+    const dirtyKey = `${schoolId}|${period}|${key}`;
     setDraft((previous) => {
       const current = previous[key] ?? { atRisk: 0, ips: 0 };
       const next = { ...current, ...patch };
-      dirty.current.set(dirtyKey, { grade, sex, period, ...next });
+      dirty.current.set(dirtyKey, { schoolId, grade, sex, period, ...next });
       return { ...previous, [key]: next };
     });
     if (timer.current !== undefined) window.clearTimeout(timer.current);

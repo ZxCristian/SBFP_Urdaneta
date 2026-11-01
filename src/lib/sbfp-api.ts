@@ -414,6 +414,26 @@ export interface ChangePasswordInput {
   newPassword: string;
 }
 
+export interface OwnTeacherDetailsInput {
+  fullName?: string;
+  position?: string;
+  contact?: string;
+}
+
+/** A teacher updates the name and contact details printed on her school's forms. */
+export const saveOwnTeacherDetails = createServerFn({ method: "POST" })
+  .validator((input: OwnTeacherDetailsInput) => input)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const { sql, access } = await requireAccess(await sessionEmail(context));
+    const { updateOwnTeacherDetails, AccountError } = await import("./sbfp-accounts");
+    if (access.account.role !== "teacher") {
+      throw new AccountError("forbidden", "Only a Teacher Portal account can edit these details.");
+    }
+    const account = await updateOwnTeacherDetails(sql, access.email, data);
+    return { account };
+  });
+
 /**
  * The signed-in account changes its own password — the teacher replacing the
  * temporary one she was handed.
@@ -732,7 +752,20 @@ export const sendSchoolFeedback = createServerFn({ method: "POST" })
     const { insertFeedback, AccountError } = await import("./sbfp-accounts");
     const schoolId = access.scope === "all" ? (data.schoolId ?? "") : (access.scope[0] ?? "");
     if (!schoolId) throw new AccountError("not_found", "No school is set for this account.");
-    await insertFeedback(sql, schoolId, data.entry as never, access.email);
+    // A school sends feedback up as "New" and as its own account holder. Only
+    // the Division Office records entries on a school's behalf — and can set a
+    // status or a reply as it does so.
+    const entry = access.scope === "all"
+      ? data.entry
+      : {
+          ...data.entry,
+          author: access.account.fullName || access.account.email,
+          role: access.account.position || "SBFP Feeding Focal Person",
+          status: "New" as const,
+          response: undefined,
+          origin: "Teacher Portal" as const,
+        };
+    await insertFeedback(sql, schoolId, entry as never, access.email);
     return { ok: true as const };
   });
 
@@ -747,9 +780,8 @@ export const replyToFeedback = createServerFn({ method: "POST" })
   .validator((input: FeedbackReplyInput) => input)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
-    const { sql, access } = await requireAccess(await sessionEmail(context));
-    const { updateFeedback, assertCanWriteFeedback } = await import("./sbfp-accounts");
-    await assertCanWriteFeedback(sql, access, data.id);
+    const { sql } = await requireAdmin(await sessionEmail(context));
+    const { updateFeedback } = await import("./sbfp-accounts");
     await updateFeedback(sql, data.id, { status: data.status, response: data.response });
     return { ok: true as const };
   });

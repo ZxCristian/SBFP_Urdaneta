@@ -9,7 +9,6 @@ import {
   sendFeedback,
   updateRecord,
   updateTeacherFeedback,
-  useTeacherStore,
 } from "@/lib/sbfp-store";
 import { UserButton } from "@/lib/auth/gates";
 import { useAccess } from "@/lib/use-access";
@@ -50,7 +49,6 @@ import {
   mustNotBePregnant,
   shortDate,
   sortRecords,
-  studentKey,
   uniqueCount,
   uniqueStudents,
 } from "@/lib/sbfp-domain";
@@ -133,8 +131,6 @@ const useT = () => useContext(ThemeCtx);
 // read through `@/lib/sbfp-store` — not a constant in this file. Both sites use
 // the same list, and the Division Office can add or rename a school without a
 // redeploy. `School` stays the shape every screen already expects.
-
-const getSchool = (schools: School[], id: string) => schools.find(s => s.id === id);
 
 /** One hue per kind of feedback (6-digit hex — Pill appends alpha to it). */
 function categoryColor(c: FeedbackCategory, t: TC): string {
@@ -1197,7 +1193,7 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
       setPeriod(editingStudent.period);
       setPeriodError(false);
     }
-  }, [editingStudent?.id]);
+  }, [editingStudent]);
 
   const grades = getGrades(school);
 
@@ -1249,7 +1245,7 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
       live = false;
       clearTimeout(timer);
     };
-  }, [form.name, form.dateOfBirth, editingStudent?.id, school.id]);
+  }, [form.name, form.dateOfBirth, editingStudent, school.id]);
   const inp: CSSProperties = { background:t.surface2, color:t.text, border:`1px solid ${t.border}`, fontFamily:"'Outfit',sans-serif" };
   const inpMono: CSSProperties = { ...inp, fontFamily:"'JetBrains Mono',monospace" };
   const cls = "w-full text-sm px-3 py-2 rounded-sm outline-none";
@@ -1856,6 +1852,7 @@ function SummaryTable({ students, school, activeSy }: { students:Student[]; scho
   const isSpedSchool = school.name === SPED_SCHOOL_NAME;
   const [cohort, setCohort] = useState<"All"|"Regular"|"SPED">("All");
   const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
   const { extras, setExtra } = useForm2Extras(school.id, period);
 
   const isSpedGrade = (g: string) => g.startsWith("SPED");
@@ -1961,6 +1958,7 @@ function SummaryTable({ students, school, activeSy }: { students:Student[]; scho
               title="SBFP Form 2 — Summary of Beneficiaries & Start of Feeding"
               onClick={async () => {
                 setExporting(true);
+                setExportError("");
                 try {
                   const { exportSummaryToExcel } = await import("@/lib/sbfp-export");
                   await exportSummaryToExcel({
@@ -1969,6 +1967,8 @@ function SummaryTable({ students, school, activeSy }: { students:Student[]; scho
                     hfaStatuses: HFA_STATUSES,
                     rows: summaryRows,
                   });
+                } catch (err) {
+                  setExportError(err instanceof Error ? err.message : "The Form 2 export could not be built.");
                 } finally { setExporting(false); }
               }}
               disabled={f.length === 0}
@@ -1989,6 +1989,12 @@ function SummaryTable({ students, school, activeSy }: { students:Student[]; scho
       <p className="text-[10px] md:hidden -mb-2" style={{ color: t.dim }}>
         Swipe the form sideways to see every column →
       </p>
+
+      {exportError && (
+        <p role="alert" className="text-xs" style={{ color: t.danger }}>
+          {exportError}
+        </p>
+      )}
 
       <Form2Sheet
         school={school}

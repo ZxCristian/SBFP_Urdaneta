@@ -49,6 +49,7 @@ import {
   saveSummaryExtra,
   updateAccount,
   updateFeedback,
+  updateOwnTeacherDetails,
   upsertRecord,
 } from "./sbfp-accounts.ts";
 import type { Sql } from "./db.ts";
@@ -244,6 +245,29 @@ describe("issuing an account", () => {
     );
   });
 
+  it("lets a teacher persist her own details, and refuses another role", async () => {
+    const updated = await updateOwnTeacherDetails(sql, TEACHER_A, {
+      fullName: "Reyes, Maria",
+      position: "Grade 3 Adviser",
+      contact: "0917 000 2222",
+    });
+    assert.equal(updated.fullName, "Reyes, Maria");
+    assert.equal(updated.position, "Grade 3 Adviser");
+    assert.equal(updated.contact, "0917 000 2222");
+    assert.equal(updated.schoolId, SCHOOL_A, "the school assignment is not part of this edit");
+
+    const identity = await sql.query<{ name: string }>(
+      'select "name" from "user" where lower("email") = $1',
+      [TEACHER_A],
+    );
+    assert.equal(identity[0].name, "Reyes, Maria", "the account menu reads the same name");
+
+    assert.equal(
+      await refusal(() => updateOwnTeacherDetails(sql, TEACHER_A, { fullName: "   " })),
+      "incomplete_profile",
+    );
+  });
+
   it("refuses weak passwords, malformed emails and a missing school", async () => {
     assert.equal(
       await refusal(() =>
@@ -402,6 +426,13 @@ describe("the Division Office account", () => {
     await updateAccount(sql, ADMIN, { status: "active" });
     await deleteAccount(sql, second.email);
     assert.equal(await countAdmins(sql), 1);
+  });
+
+  it("cannot use the Teacher Portal's self-profile edit", async () => {
+    assert.equal(
+      await refusal(() => updateOwnTeacherDetails(sql, ADMIN, { fullName: "Not a teacher" })),
+      "forbidden",
+    );
   });
 
   it("reads a school the Division Office itself has no account for", async () => {
@@ -751,6 +782,64 @@ describe("school data", () => {
     assert.equal(profile?.principal, "Mr. Reyes", "the earlier fields survive");
     assert.equal(profile?.cityMunicipalityBarangay, "Urdaneta City, Barangay Anonas");
     assert.equal(profile?.division, "Urdaneta City");
+  });
+
+  it("sanitizes feedback and never overwrites another school's row", async () => {
+    await insertFeedback(
+      sql,
+      SCHOOL_B,
+      {
+        id: "tf_conflict",
+        author: "   ",
+        role: "  ",
+        category: "Nutrition Data",
+        rating: 9,
+        message: "  Needs a reply  ",
+        createdAt: "not-a-date",
+        status: "New",
+        origin: "Teacher Portal",
+      },
+      "teacher.b@depedurdaneta.gov.ph",
+    );
+    const row = await sql.query<{
+      school_id: string;
+      author: string;
+      rating: number;
+      message: string;
+      created_at: string;
+      status: string;
+    }>(
+      "select school_id, author, rating, message, created_at::text as created_at, status from sbfp_feedback where id = $1",
+      ["tf_conflict"],
+    );
+    assert.equal(row[0].school_id, SCHOOL_B);
+    assert.equal(row[0].author, "School");
+    assert.equal(row[0].rating, 5, "a rating outside 1–5 is clamped");
+    assert.equal(row[0].message, "Needs a reply");
+    assert.match(row[0].created_at, /^\d{4}-\d{2}-\d{2}/);
+    assert.equal(row[0].status, "New");
+
+    // The same id from another school is a no-op, not a way to rewrite the row.
+    await insertFeedback(
+      sql,
+      SCHOOL_A,
+      {
+        id: "tf_conflict",
+        author: "Impostor",
+        role: "Other",
+        category: "Other",
+        rating: 1,
+        message: "Tampered",
+        createdAt: "2026-08-02",
+        status: "Resolved",
+      },
+      TEACHER_A,
+    );
+    const unchanged = await sql.query<{ school_id: string; message: string; status: string }>(
+      "select school_id, message, status from sbfp_feedback where id = $1",
+      ["tf_conflict"],
+    );
+    assert.deepEqual(unchanged, [{ school_id: SCHOOL_B, message: "Needs a reply", status: "New" }]);
   });
 
   it("updates a reply and a status independently", async () => {

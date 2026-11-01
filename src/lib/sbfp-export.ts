@@ -256,7 +256,7 @@ export async function buildSbfpWorkbook(
   // Signature block
   const lastData = 13 + sorted.length;
   const signRow = lastData + 2;
-  ws.getCell(`B${signRow}`).value = "Approve by:";
+  ws.getCell(`B${signRow}`).value = "Approved by:";
   ws.getCell(`B${signRow}`).font = { name: FONT, size: 10, bold: true };
   ws.getCell(`B${signRow + 2}`).value = "________________________";
   ws.getCell(`B${signRow + 2}`).font = { name: FONT, size: 11, bold: true };
@@ -484,19 +484,19 @@ export async function buildSummaryWorkbook(
 
   // ── Data — M / F / Total per grade, the label merged down the group ───────
   let r = HR + 4;
-  let gradeNo = 0;
   let i = 0;
   while (i < rows.length) {
     const grade = rows[i].grade;
     let j = i;
     while (j < rows.length && rows[j].grade === grade) j++;
     const isGrand = grade === "GRAND TOTAL";
-    if (!isGrand) gradeNo++;
     const first = r;
     if (j - i > 1) ws.mergeCells(`${L(C_GRADE)}${first}:${L(C_GRADE)}${first + (j - i) - 1}`);
 
     const gradeCell = ws.getCell(first, C_GRADE);
-    gradeCell.value = isGrand ? "GRAND TOTAL" : `${gradeNo}. ${grade}`;
+    // The summary screen and the printed sheet name the grade only; the old
+    // `1. Kinder` prefixes were removed from the UI but survived here.
+    gradeCell.value = isGrand ? "GRAND TOTAL" : grade;
     gradeCell.font = { name: FONT, size: 10, bold: true };
     gradeCell.alignment = { horizontal: "left", vertical: "top", wrapText: true };
 
@@ -518,7 +518,8 @@ export async function buildSummaryWorkbook(
         row.dewormed,
         row.fourPs,
         row.sbfp,
-        null, // filled in by the school: Date Feeding Started/Ended
+        // The same date the on-screen Form 2 prints for this column.
+        formatDateMDY(school.dateStartFeeding || ""),
       ];
       values.forEach((value, ci) => {
         const cell = ws.getCell(r, ci + 2);
