@@ -21,28 +21,46 @@ export function emailConfigured(): boolean {
   return Boolean(process.env.RESEND_API_KEY?.trim());
 }
 
+/** A safe http(s) origin from a configured value, or null. */
+function configuredOrigin(value: string | undefined): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The link the email carries. `APP_ORIGIN` is the canonical, trusted origin and
- * takes precedence; without it the request's own origin is used. Restricting the
- * fallback to http(s) keeps a malformed env value from becoming a link.
+ * takes precedence; the platform's `BETTER_AUTH_URL` is next, and only then the
+ * request's own origin. Restricting the value to an http(s) origin keeps a
+ * malformed env value or a forged Host header from becoming the link's host.
  *
  * The reset token travels in the query string (not a path segment) so the
  * existing `/login` route can recognise it, and so TanStack's router does not
  * need a new route just to carry it.
  */
 export function buildResetUrl(token: string): string {
-  const configured = process.env.APP_ORIGIN?.trim();
-  let origin = configured ?? "";
+  // A reset link carries a bearer-like token, so its host must come from trusted
+  // configuration first: APP_ORIGIN, then the platform's BETTER_AUTH_URL. Only
+  // when neither exists (local preview) do we use the request's own origin.
+  let origin =
+    configuredOrigin(process.env.APP_ORIGIN) ??
+    configuredOrigin(process.env.BETTER_AUTH_URL);
   if (!origin) {
     try {
-      origin = getRequestUrl().origin;
+      origin = configuredOrigin(getRequestUrl().origin);
     } catch {
       // Outside a request (tests): fall back to the local preview origin.
-      origin = "";
+      origin = null;
     }
   }
-  const safe = /^https?:\/\//i.test(origin) ? origin : "http://localhost:8080";
-  return `${safe.replace(/\/+$/, "")}/login?reset=${encodeURIComponent(token)}`;
+  const safe = origin ?? "http://localhost:8080";
+  return `${safe}/login?reset=${encodeURIComponent(token)}`;
 }
 
 function escapeHtml(value: string): string {

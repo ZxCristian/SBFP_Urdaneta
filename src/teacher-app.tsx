@@ -64,6 +64,7 @@ import {
   useTeacherStore,
 } from "@/lib/sbfp-store";
 import type { TeacherProfile } from "@/lib/sbfp-store";
+import { useStripCredentialQuery } from "@/lib/credential-url";
 import { syncWorkspace } from "@/lib/sbfp-store";
 import { useAccess } from "@/lib/use-access";
 import type { Access } from "@/lib/use-access";
@@ -385,6 +386,12 @@ function TeacherSignIn({ notice }: { notice?: ReactNode }) {
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Credential inputs have no `name` on purpose: a native submission before
+  // hydration would otherwise put the password into the URL. `method="post"`
+  // keeps that fallback out of the query string too.
+  const emailRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
+  useStripCredentialQuery();
 
   const submit = async (emailValue: string, passwordValue: string) => {
     setError("");
@@ -496,22 +503,22 @@ function TeacherSignIn({ notice }: { notice?: ReactNode }) {
             subtitle="Use the email and temporary password the Division Office issued."
           >
             <form
+              method="post"
               className="flex flex-col gap-4"
               onSubmit={(e) => {
                 e.preventDefault();
                 // Read the fields at submit time so a password manager's
                 // autofill is accepted even when it did not fire input events.
-                const fields = new FormData(e.currentTarget);
                 void submit(
-                  String(fields.get("email") ?? ""),
-                  String(fields.get("password") ?? ""),
+                  emailRef.current?.value ?? email,
+                  passwordRef.current?.value ?? password,
                 );
               }}
             >
               <Field text="Email">
                 <input
+                  ref={emailRef}
                   type="email"
-                  name="email"
                   autoComplete="username"
                   value={email}
                   onChange={(e) => { setEmail(e.target.value); setError(""); }}
@@ -522,8 +529,8 @@ function TeacherSignIn({ notice }: { notice?: ReactNode }) {
               <Field text="Password">
                 <div className="flex gap-2">
                   <input
+                    ref={passwordRef}
                     type={show ? "text" : "password"}
-                    name="password"
                     autoComplete="current-password"
                     value={password}
                     onChange={(e) => { setPassword(e.target.value); setError(""); }}

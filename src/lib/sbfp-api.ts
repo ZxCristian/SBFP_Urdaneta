@@ -67,6 +67,18 @@ async function settle<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
 }
 
 /**
+ * Refuse a cross-site scripted request on an endpoint that has no session to
+ * protect it (first-run setup and the password-reset pair). `authMiddleware`
+ * applies the same guard to every signed-in endpoint; without it here, a
+ * malicious page could POST a first-run admin into a deployment that has not
+ * claimed its account yet. Non-browser callers and same-origin calls pass.
+ */
+async function requireSameSiteRequest(): Promise<void> {
+  const { assertSameSiteRequest } = await import("@/lib/auth/isolation.server");
+  assertSameSiteRequest();
+}
+
+/**
  * The verified session email, or null. `null` means nobody is signed in — a
  * caller with a session but no email cannot hold an account.
  */
@@ -285,6 +297,7 @@ export const bootstrapAdminAccount = createServerFn({ method: "POST" })
   .validator((input: AdminBootstrapInput) => input)
   .handler(async ({ data }) =>
     settle(async () => {
+      await requireSameSiteRequest();
       const { getSql } = await import("@/lib/db");
       const { createAccount, hasAdminAccount, AccountError } = await import(
         "./sbfp-accounts"
@@ -514,6 +527,7 @@ export interface RequestResetInput {
 export const requestAdminPasswordReset = createServerFn({ method: "POST" })
   .validator((input: RequestResetInput) => input)
   .handler(async ({ data }) => {
+    await requireSameSiteRequest();
     const { getSql, dbSource } = await import("@/lib/db");
     const { createPasswordReset, RESET_LINK_MINUTES } = await import("./sbfp-accounts");
     const { buildResetUrl, emailConfigured, sendPasswordResetEmail } = await import(
@@ -551,6 +565,7 @@ export const resetAdminPasswordWithToken = createServerFn({ method: "POST" })
   .validator((input: ResetPasswordWithTokenInput) => input)
   .handler(async ({ data }) =>
     settle(async () => {
+      await requireSameSiteRequest();
       const { getSql } = await import("@/lib/db");
       const { resetPasswordWithToken } = await import("./sbfp-accounts");
       const sql = await getSql();

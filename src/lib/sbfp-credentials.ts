@@ -37,12 +37,31 @@ export function passwordProblem(password: string): string | null {
  */
 const ALPHABET = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
+/**
+ * A uniformly random index from the platform CSPRNG.
+ *
+ * `Math.random()` is predictable enough that a temporary password minted from it
+ * can be guessed from other outputs. Rejection sampling keeps every character in
+ * the alphabet equally likely instead of skewing the first few.
+ */
+function randomIndex(max: number): number {
+  const source = globalThis.crypto;
+  if (!source?.getRandomValues) {
+    throw new Error("A secure random source is required to generate passwords.");
+  }
+  const limit = Math.floor(0x100000000 / max) * max;
+  const buffer = new Uint32Array(1);
+  let value = 0;
+  do {
+    source.getRandomValues(buffer);
+    value = buffer[0] ?? 0;
+  } while (value >= limit);
+  return value % max;
+}
+
 /** A readable one-off password, e.g. `Km7t-Rq4w`, to hand to a teacher. */
 export function generateTempPassword(): string {
   const pick = (n: number) =>
-    Array.from(
-      { length: n },
-      () => ALPHABET[Math.floor(Math.random() * ALPHABET.length)],
-    ).join("");
+    Array.from({ length: n }, () => ALPHABET[randomIndex(ALPHABET.length)]).join("");
   return `${pick(4)}-${pick(4)}`;
 }

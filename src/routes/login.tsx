@@ -14,7 +14,7 @@
  * A teacher who lands here is pointed at the Teacher Portal instead of being left
  * on a form she cannot use.
  */
-import { useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { createFileRoute, Navigate, Link } from "@tanstack/react-router";
 import { authClient } from "@/lib/auth/client";
 import { signInErrorMessage } from "@/lib/auth/sign-in-error";
@@ -26,6 +26,7 @@ import {
   requestAdminPasswordReset,
   resetAdminPasswordWithToken,
 } from "@/lib/sbfp-api";
+import { useStripCredentialQuery } from "@/lib/credential-url";
 import { MIN_PASSWORD_LENGTH } from "@/lib/sbfp-credentials";
 import { syncWorkspace } from "@/lib/sbfp-store";
 
@@ -212,6 +213,8 @@ export function LoginScreen({
   resetToken?: string;
   onResetDone?: () => void;
 }) {
+  useStripCredentialQuery();
+
   return (
     <div
       style={{
@@ -605,8 +608,16 @@ function SignInForm({
   title?: string;
 }) {
   const [show, setShow] = useState(false);
+  // The credential inputs deliberately have no `name` attribute. A native form
+  // submission (before hydration, or with JavaScript unavailable) otherwise
+  // serialises them into the URL, putting the password in the address bar,
+  // browser history and proxy logs. `method="post"` keeps even a no-JS fallback
+  // from ever writing credentials into the query string.
+  const emailRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
   return (
     <form
+      method="post"
       className="flex flex-col gap-3.5"
       onSubmit={(e) => {
         e.preventDefault();
@@ -614,9 +625,8 @@ function SignInForm({
         // Read the fields as they are at submit time. React state can still be
         // empty when a password manager autofills without input events, and the
         // visible email/password must still be the ones submitted.
-        const fields = new FormData(e.currentTarget);
-        const submittedEmail = String(fields.get("email") ?? "").trim();
-        const submittedPassword = String(fields.get("password") ?? "");
+        const submittedEmail = (emailRef.current?.value ?? email).trim();
+        const submittedPassword = passwordRef.current?.value ?? password;
         // Re-sync state before the request so the controlled fields keep the
         // autofilled values if the credentials turn out to be wrong.
         setEmail(submittedEmail);
@@ -627,8 +637,8 @@ function SignInForm({
       {title && <div style={{ fontSize: 13, fontWeight: 600, color: T.sub }}>{title}</div>}
       <Field text="Email">
         <input
+          ref={emailRef}
           type="email"
-          name="email"
           autoComplete="username"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -640,8 +650,8 @@ function SignInForm({
       <Field text="Password">
         <div className="flex gap-2">
           <input
+            ref={passwordRef}
             type={show ? "text" : "password"}
-            name="password"
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -719,7 +729,7 @@ function ForgotPasswordForm({
   };
 
   return (
-    <form className="flex flex-col gap-3.5" onSubmit={submit}>
+    <form method="post" className="flex flex-col gap-3.5" onSubmit={submit}>
       <Field
         text="Division Office email"
         hint="The address on the Division Office account — the link is sent to it."
@@ -867,7 +877,7 @@ function ResetPasswordForm({
   );
 
   return (
-    <form className="flex flex-col gap-3.5" onSubmit={submit}>
+    <form method="post" className="flex flex-col gap-3.5" onSubmit={submit}>
       <Field text="New password" hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}>
         <div className="flex gap-2">
           <input
@@ -932,6 +942,7 @@ function BootstrapForm({
   const [creating, setCreating] = useState(false);
   return (
     <form
+      method="post"
       className="flex flex-col gap-3.5 mt-4"
       onSubmit={async (e) => {
         e.preventDefault();

@@ -748,11 +748,22 @@ export async function claimAdminAccountForEmail(
   if (existing) {
     throw new AccountError("email_taken", `${normalized} already has an account.`);
   }
-  await sql`
+  // The check above reads the table; this INSERT makes "exactly one first-run
+  // admin" true even when two claims arrive together. A racing caller inserts
+  // nothing instead of a second Division Office account.
+  const inserted = await sql<{ email: string }>`
     insert into sbfp_accounts
       (email, role, full_name, position, contact, school_id, status, temp_password, created_at, updated_at)
-    values (${normalized}, 'admin', ${fullName.trim()}, '', '', null, 'active', false, now(), now())
+    select ${normalized}, 'admin', ${fullName.trim()}, '', '', null, 'active', false, now(), now()
+    where not exists (select 1 from sbfp_accounts where role = 'admin')
+    returning email
   `;
+  if (!inserted[0]) {
+    throw new AccountError(
+      "forbidden",
+      "The Division Office account already exists. Sign in with it.",
+    );
+  }
   const created = await findAccountByEmail(sql, normalized);
   if (!created) throw new AccountError("not_found", "The account could not be created.");
   return created;

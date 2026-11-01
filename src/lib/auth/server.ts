@@ -219,7 +219,26 @@ export const auth = betterAuth({
   session: { cookieCache: { enabled: false } },
 
   // Local email/password — toggled only via `./email-password` (not a plugin).
-  ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true } } : {}),
+  // Sign-UP stays closed: teacher accounts are issued by the Division Office
+  // (`createAccount` writes the identity and its credential directly), so the
+  // public endpoint must never be able to mint an identity of its own. Sign-in
+  // remains open for the accounts that were issued.
+  ...(emailAndPasswordEnabled
+    ? { emailAndPassword: { enabled: true, disableSignUp: true } }
+    : {}),
+
+  // Brute-force brake on the credential endpoints. Better Auth keeps these
+  // counters in memory, so on a serverless host the budget is per instance —
+  // still enough to turn an unlimited password guesser into a slow one.
+  rateLimit: {
+    enabled: true,
+    window: 60,
+    max: 60,
+    customRules: {
+      "/sign-in/email": { window: 60, max: 10 },
+      "/sign-up/email": { window: 60, max: 5 },
+    },
+  },
 
   // `__Host-` prefixed cookies: the browser REFUSES any same-named cookie that
   // carries a `Domain` attribute, so a sibling `*.grok.me` app cannot "toss" a
