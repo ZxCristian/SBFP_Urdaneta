@@ -206,16 +206,18 @@ const BENEFICIARY_GRADES: GradeLevel[] = ["Grade 2","Grade 3","Grade 4","Grade 5
 
 /** Auto-assign beneficiary class
  *  - Kinder & Grade 1 → always Primary
- *  - Grades 2–12: Primary = Severely Wasted, Secondary = Severely Stunted
+ *  - Grades 2–12: Primary = Wasted or Severely Wasted;
+ *    Secondary = Stunted or Severely Stunted. When a learner is both, the
+ *    wasted status wins (Primary).
  */
 export function classifyBeneficiary(grade: string, bmiStatus: string, hfaStatus: string): "Primary"|"Secondary"|"" {
   // Kinder / Grade 1 (regular or SPED) → always Primary
   if (grade === "Kinder" || grade === "Grade 1" || grade === "SPED Kinder" || grade === "SPED Grade 1") return "Primary";
-  // SPED Grade 2–6 follow same severe rules as regular G2–6
+  // SPED Grade 2–6 follow the same rules as the regular grades
   const normalized = grade.replace(/^SPED /, "") as GradeLevel;
   if (!BENEFICIARY_GRADES.includes(normalized) && !BENEFICIARY_GRADES.includes(grade as GradeLevel)) return "";
-  if (bmiStatus === "Severely Wasted") return "Primary";
-  if (hfaStatus === "Severely Stunted") return "Secondary";
+  if (bmiStatus === "Wasted" || bmiStatus === "Severely Wasted") return "Primary";
+  if (hfaStatus === "Stunted" || hfaStatus === "Severely Stunted") return "Secondary";
   return "";
 }
 

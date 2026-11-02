@@ -1294,7 +1294,7 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
       // Keep nutritionalStatus in sync with BMI status (an auto field, not a separate one)
       next.nutritionalStatus = next.bmiStatus;
 
-      // Beneficiary class (Kinder/G1 = Primary; G2–12 from severe status) — still editable
+      // Beneficiary class (Kinder/G1 = Primary; G2–12 from wasted/stunted status) — still editable
       if (key !== "classificationOfBeneficiary") {
         const autoClass = classifyBeneficiary(next.gradeLevel, next.bmiStatus, next.hfaStatus);
         if (autoClass) next.classificationOfBeneficiary = autoClass;
@@ -1501,7 +1501,7 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
       {/* Classification */}
       <div style={{ border:`1px solid ${t.border}`, background:t.surface }} className="p-5 flex flex-col gap-4">
         <div className="text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>Beneficiary Classification</div>
-        <p className="text-[10px] -mt-2" style={{ color:t.faint }}>Kinder &amp; Grade 1 = Primary · Grades 2–12: Primary = Severely Wasted · Secondary = Severely Stunted · auto, editable</p>
+        <p className="text-[10px] -mt-2" style={{ color:t.faint }}>Kinder &amp; Grade 1 = Primary · Grades 2–12: Wasted or Severely Wasted = Primary · Stunted or Severely Stunted = Secondary · auto, editable</p>
         <div className="flex gap-2" style={{ maxWidth: 420 }}>
           {(["Primary","Secondary"] as const).map(c => (
             <button key={c} onClick={() => set("classificationOfBeneficiary",c)} className="flex-1 py-2 text-sm rounded-sm cursor-pointer border transition-colors"

@@ -1396,7 +1396,7 @@ function DataEntry({
             ))}
           </div>
           <p style={{ fontSize: 11.5, color: C.dim, marginTop: 7 }}>
-            Kinder and Grade 1 are Primary. From Grade 2, only Severely Wasted is Primary and Severely Stunted is Secondary.
+            Kinder and Grade 1 are Primary. From Grade 2, Wasted or Severely Wasted is Primary, and Stunted or Severely Stunted is Secondary. If a learner is both, the wasted status wins.
           </p>
         </div>
       </Card>
