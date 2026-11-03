@@ -2,12 +2,18 @@ import { createFileRoute } from "@tanstack/react-router";
 import TeacherApp from "@/teacher-app";
 
 /**
- * The School Portal — one school's own desk for the SBFP (school personnel keep
- * the school profile, encode learner records and send feedback up to the
- * district office). The district console lives at `/`.
+ * `?reset=<token>` is the address the School Portal password-reset email
+ * carries. Keeping it on `/teacher` means a school account gets its own warm
+ * portal theme instead of the Division Office's console sign-in page.
  */
+export interface TeacherSearch {
+  reset?: string;
+}
+
 export const Route = createFileRoute("/teacher")({
   component: TeacherPortal,
+  validateSearch: (search: Record<string, unknown>): TeacherSearch =>
+    typeof search.reset === "string" && search.reset ? { reset: search.reset } : {},
   head: () => ({
     meta: [
       { title: "SBFP School Portal · Urdaneta City Schools" },
@@ -21,5 +27,6 @@ export const Route = createFileRoute("/teacher")({
 });
 
 function TeacherPortal() {
-  return <TeacherApp />;
+  const { reset } = Route.useSearch();
+  return <TeacherApp resetToken={reset} />;
 }

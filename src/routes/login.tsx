@@ -23,8 +23,8 @@ import {
   bootstrapAdminAccount,
   claimAdminAccount,
   fetchBootstrapState,
-  requestAdminPasswordReset,
-  resetAdminPasswordWithToken,
+  requestPasswordReset,
+  resetPasswordWithToken,
 } from "@/lib/sbfp-api";
 import { useStripCredentialQuery } from "@/lib/credential-url";
 import { MIN_PASSWORD_LENGTH } from "@/lib/sbfp-credentials";
@@ -719,7 +719,7 @@ function ForgotPasswordForm({
     }
     setBusy(true);
     try {
-      const result = await requestAdminPasswordReset({ data: { email: cleanEmail } });
+      const result = await requestPasswordReset({ data: { email: cleanEmail } });
       setSent({ configured: result.configured, previewUrl: result.previewUrl });
     } catch {
       setError("The reset link could not be requested just now. Try again in a moment.");
@@ -847,7 +847,7 @@ function ResetPasswordForm({
       return;
     }
     setBusy(true);
-    const result = await resetAdminPasswordWithToken({ data: { token, password } });
+    const result = await resetPasswordWithToken({ data: { token, password } });
     setBusy(false);
     if (!result.ok) {
       setError(result.message);

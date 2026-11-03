@@ -12,7 +12,15 @@
  * feedback sent here lands in the district's Feedbacks feed with the district's
  * reply coming back onto the same card.
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import {
   BMI_STATUSES,
   EMPTY_STUDENT,
@@ -74,7 +82,12 @@ import { manualTotal, useForm2Extras } from "@/lib/use-form2-extras";
 import { UserButton } from "@/lib/auth/gates";
 import { authClient, signOut } from "@/lib/auth/client";
 import { signInErrorMessage } from "@/lib/auth/sign-in-error";
-import { changeOwnPassword, lookupPreviousBeneficiary } from "@/lib/sbfp-api";
+import {
+  changeOwnPassword,
+  lookupPreviousBeneficiary,
+  requestPasswordReset,
+  resetPasswordWithToken,
+} from "@/lib/sbfp-api";
 import { MIN_PASSWORD_LENGTH } from "@/lib/sbfp-credentials";
 import { learnerProblem } from "@/lib/sbfp-validation";
 import { formatSchoolYear } from "@/lib/sbfp-years";
@@ -378,7 +391,297 @@ const bmiTone = (s: string): "good" | "warn" | "danger" | "gold" | "muted" =>
 // ── Sign in ───────────────────────────────────────────────────────────────────
 // Accounts are issued by the Division Office, so there is nothing to register
 // here: school personnel sign in with the email and temporary password they
-// were handed, and land on their own school.
+// were handed, and land on their own school. If the password is gone, the same
+// Supabase-backed reset tokens the Division Office uses bring the account back
+// without asking the office to hand out another temporary one.
+
+/** A lightweight notice in the School Portal's warm paper palette. */
+function SignInNotice({ tone, children }: { tone: "error" | "info"; children: ReactNode }) {
+  return (
+    <p
+      role={tone === "error" ? "alert" : undefined}
+      style={{
+        fontSize: 12.5,
+        color: tone === "error" ? C.danger : C.sub,
+        background: tone === "error" ? C.dangerSoft : C.surface2,
+        border: `1px solid ${tone === "error" ? "#f0d3d0" : C.border}`,
+        borderRadius: 9,
+        padding: "9px 11px",
+        lineHeight: 1.55,
+      }}
+    >
+      {children}
+    </p>
+  );
+}
+
+/**
+ * The locked-out door for a school account. The confirmation is deliberately
+ * neutral: the same words whether or not the address holds an active account,
+ * so it cannot be used to discover which emails were issued.
+ */
+function TeacherForgotPassword({
+  initialEmail,
+  onBack,
+}: {
+  initialEmail: string;
+  onBack: () => void;
+}) {
+  const [email, setEmail] = useState(initialEmail);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [sent, setSent] = useState<{ configured: boolean; previewUrl: string | null } | null>(null);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) {
+      setError("Enter the email address the Division Office issued for your school.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await requestPasswordReset({ data: { email: cleanEmail } });
+      setSent({ configured: result.configured, previewUrl: result.previewUrl });
+    } catch {
+      setError("The reset link could not be requested just now. Try again in a moment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form method="post" className="flex flex-col gap-4" onSubmit={submit}>
+      <Field
+        text="School account email"
+        hint="The address the Division Office issued for your school."
+      >
+        <input
+          type="email"
+          autoComplete="username"
+          value={email}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            setSent(null);
+          }}
+          placeholder="school@depedurdaneta.gov.ph"
+          style={control}
+        />
+      </Field>
+
+      {error && <SignInNotice tone="error">{error}</SignInNotice>}
+
+      {sent && (
+        <SignInNotice tone="info">
+          If <strong style={{ color: C.text }}>{email.trim().toLowerCase()}</strong> holds an
+          active School Portal account, a reset link is on its way. It works once and expires
+          in 30 minutes.
+        </SignInNotice>
+      )}
+
+      {sent && !sent.configured && (
+        <SignInNotice tone="error">
+          Email delivery is not set up yet, so no message could actually go out. Ask the
+          Division Office for a new temporary password, or add an email sender in Settings →
+          Environment.
+        </SignInNotice>
+      )}
+
+      {sent?.previewUrl && (
+        <a
+          href={sent.previewUrl}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            minHeight: 40,
+            borderRadius: 9,
+            border: `1px dashed ${C.navy}66`,
+            background: C.navySoft,
+            color: C.navy,
+            fontSize: 12.5,
+            fontWeight: 600,
+            textDecoration: "none",
+            padding: "0 14px",
+          }}
+        >
+          Open the reset link (preview inbox) →
+        </a>
+      )}
+
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <button
+          type="button"
+          onClick={onBack}
+          style={{
+            background: "none",
+            border: "none",
+            padding: 0,
+            fontFamily: font,
+            fontSize: 12.5,
+            color: C.sub,
+            cursor: "pointer",
+          }}
+        >
+          ← Back to sign in
+        </button>
+        <Button type="submit" disabled={busy}>
+          {busy ? "Sending…" : sent ? "Send another link" : "Email me a reset link"}
+        </Button>
+      </div>
+
+      <p style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.6 }}>
+        Only one link is sent per minute, and a newer link replaces the previous one.
+      </p>
+    </form>
+  );
+}
+
+/**
+ * The other half of the emailed link: choose a new password, proven by the
+ * token from the email. Reached at `/teacher?reset=…`; the token is consumed
+ * as it is read, so a used or expired link is refused.
+ */
+function TeacherResetPassword({ token }: { token: string }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState<{ email: string; role: "admin" | "teacher" } | null>(null);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Use at least ${MIN_PASSWORD_LENGTH} characters for the new password.`);
+      return;
+    }
+    if (password !== confirm) {
+      setError("The two passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await resetPasswordWithToken({ data: { token, password } });
+      if (!result.ok) {
+        setError(result.message);
+        return;
+      }
+      setDone({ email: result.email, role: result.role });
+    } catch {
+      setError("That reset link is invalid or has expired. Request a new one.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const destination = done?.role === "admin" ? "/login" : "/teacher";
+  const destinationLabel = done?.role === "admin" ? "Division Console" : "School Portal";
+
+  return (
+    <div style={{ minHeight: "100dvh", background: C.bg, color: C.text, fontFamily: font }}>
+      <header style={{ background: C.surface, borderBottom: `1px solid ${C.border}` }}>
+        <div className="mx-auto px-5 py-3 flex items-center gap-3" style={{ maxWidth: 1080 }}>
+          <img src="/school-health-wheel.svg" alt="" width={36} height={36} />
+          <span>
+            <span style={{ display: "block", fontSize: 15, fontWeight: 600, color: C.text }}>
+              SBFP School Portal
+            </span>
+            <span style={{ display: "block", fontSize: 11, color: C.dim }}>
+              Urdaneta City Schools Division
+            </span>
+          </span>
+        </div>
+      </header>
+
+      <div className="mx-auto px-5 py-8 md:py-12" style={{ maxWidth: 560 }}>
+        <Card
+          title={done ? "Password updated" : "Choose a new password"}
+          subtitle={
+            done
+              ? "The link has been used and will not work again."
+              : "The link in your email works once. Set the password you want, then sign in with it."
+          }
+        >
+          {done ? (
+            <div className="flex flex-col gap-4">
+              <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.65 }}>
+                Your password for <strong style={{ color: C.text }}>{done.email}</strong> has
+                been updated. Sign in with the new one.
+              </p>
+              <a
+                href={destination}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  minHeight: 42,
+                  borderRadius: 9,
+                  background: C.navy,
+                  color: "#fff",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  textDecoration: "none",
+                  padding: "0 18px",
+                }}
+              >
+                Go to {destinationLabel} sign in →
+              </a>
+              <p style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.6 }}>
+                Setting a new password signs you out everywhere else. For another link, use
+                “Forgot your password?” on the sign-in form.
+              </p>
+            </div>
+          ) : (
+            <form method="post" className="flex flex-col gap-4" onSubmit={submit}>
+              <Field text="New password" hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}>
+                <div className="flex gap-2">
+                  <input
+                    type={show ? "text" : "password"}
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Your new password"
+                    style={control}
+                  />
+                  <Button small tone="ghost" onClick={() => setShow((v) => !v)}>
+                    {show ? "Hide" : "Show"}
+                  </Button>
+                </div>
+              </Field>
+              <Field text="Confirm new password">
+                <input
+                  type={show ? "text" : "password"}
+                  autoComplete="new-password"
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  placeholder="Repeat the password"
+                  style={control}
+                />
+              </Field>
+
+              {error && <SignInNotice tone="error">{error}</SignInNotice>}
+
+              <div>
+                <Button type="submit" disabled={busy}>
+                  {busy ? "Saving…" : "Set a new password"}
+                </Button>
+              </div>
+            </form>
+          )}
+        </Card>
+
+        <p style={{ marginTop: 16, fontSize: 12, color: C.dim }}>
+          <a href="/teacher" style={{ color: C.navy, textDecoration: "none" }}>
+            ← Back to School Portal sign in
+          </a>
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function TeacherSignIn({ notice }: { notice?: ReactNode }) {
   const [email, setEmail] = useState("");
@@ -386,6 +689,8 @@ function TeacherSignIn({ notice }: { notice?: ReactNode }) {
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  /** Swapped for the sign-in form: "email me a reset link". */
+  const [forgot, setForgot] = useState(false);
   // Credential inputs have no `name` on purpose: a native submission before
   // hydration would otherwise put the password into the URL. `method="post"`
   // keeps that fallback out of the query string too.
@@ -412,7 +717,7 @@ function TeacherSignIn({ notice }: { notice?: ReactNode }) {
         const message = signInErrorMessage(authError);
         setError(
           message === "That email and password do not match an account."
-            ? `${message} Ask the Division Office for a new temporary password.`
+            ? `${message} Try “Forgot your password?” below, or ask the Division Office for a new temporary password.`
             : message,
         );
         return;
@@ -499,63 +804,100 @@ function TeacherSignIn({ notice }: { notice?: ReactNode }) {
           {notice}
 
           <Card
-            title="Sign in to your school"
-            subtitle="Use the email and temporary password the Division Office issued."
+            title={forgot ? "Reset your password" : "Sign in to your school"}
+            subtitle={
+              forgot
+                ? "We will email a single-use link to the address the Division Office issued for your school."
+                : "Use the email and temporary password the Division Office issued."
+            }
           >
-            <form
-              method="post"
-              className="flex flex-col gap-4"
-              onSubmit={(e) => {
-                e.preventDefault();
-                // Read the fields at submit time so a password manager's
-                // autofill is accepted even when it did not fire input events.
-                void submit(
-                  emailRef.current?.value ?? email,
-                  passwordRef.current?.value ?? password,
-                );
-              }}
-            >
-              <Field text="Email">
-                <input
-                  ref={emailRef}
-                  type="email"
-                  autoComplete="username"
-                  value={email}
-                  onChange={(e) => { setEmail(e.target.value); setError(""); }}
-                  placeholder="school@depedurdaneta.gov.ph"
-                  style={control}
-                />
-              </Field>
-              <Field text="Password">
-                <div className="flex gap-2">
-                  <input
-                    ref={passwordRef}
-                    type={show ? "text" : "password"}
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={(e) => { setPassword(e.target.value); setError(""); }}
-                    placeholder="••••••••"
-                    style={control}
-                  />
-                  <Button small tone="ghost" type="button" onClick={() => setShow((v) => !v)}>
-                    {show ? "Hide" : "Show"}
-                  </Button>
+            {forgot ? (
+              <TeacherForgotPassword
+                initialEmail={email}
+                onBack={() => {
+                  setForgot(false);
+                  setError("");
+                }}
+              />
+            ) : (
+              <>
+                <form
+                  method="post"
+                  className="flex flex-col gap-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    // Read the fields at submit time so a password manager's
+                    // autofill is accepted even when it did not fire input events.
+                    void submit(
+                      emailRef.current?.value ?? email,
+                      passwordRef.current?.value ?? password,
+                    );
+                  }}
+                >
+                  <Field text="Email">
+                    <input
+                      ref={emailRef}
+                      type="email"
+                      autoComplete="username"
+                      value={email}
+                      onChange={(e) => { setEmail(e.target.value); setError(""); }}
+                      placeholder="school@depedurdaneta.gov.ph"
+                      style={control}
+                    />
+                  </Field>
+                  <Field text="Password">
+                    <div className="flex gap-2">
+                      <input
+                        ref={passwordRef}
+                        type={show ? "text" : "password"}
+                        autoComplete="current-password"
+                        value={password}
+                        onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                        placeholder="••••••••"
+                        style={control}
+                      />
+                      <Button small tone="ghost" type="button" onClick={() => setShow((v) => !v)}>
+                        {show ? "Hide" : "Show"}
+                      </Button>
+                    </div>
+                  </Field>
+                  {error && <SignInNotice tone="error">{error}</SignInNotice>}
+                  <div className="flex items-center gap-3">
+                    <Button type="submit" disabled={busy}>
+                      {busy ? "Signing in…" : "Sign in"}
+                    </Button>
+                    <span style={{ fontSize: 11.5, color: C.dim }}>
+                      First sign-in? Change the password in My Profile → Account.
+                    </span>
+                  </div>
+                </form>
+                <div style={{ marginTop: 12, textAlign: "right" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForgot(true);
+                      setError("");
+                    }}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      minHeight: 36,
+                      background: "none",
+                      border: "none",
+                      padding: "0 2px",
+                      fontFamily: font,
+                      fontSize: 12.5,
+                      color: C.navy,
+                      textDecoration: "underline",
+                      textUnderlineOffset: 3,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Forgot your password?
+                  </button>
                 </div>
-              </Field>
-              {error && (
-                <p style={{ fontSize: 12.5, color: C.danger, background: C.dangerSoft, border: `1px solid #f0d3d0`, borderRadius: 9, padding: "9px 11px", lineHeight: 1.5 }}>
-                  {error}
-                </p>
-              )}
-              <div className="flex items-center gap-3">
-                <Button type="submit" disabled={busy}>
-                  {busy ? "Signing in…" : "Sign in"}
-                </Button>
-                <span style={{ fontSize: 11.5, color: C.dim }}>
-                  First sign-in? Change the password in My Profile → Account.
-                </span>
-              </div>
-            </form>
+              </>
+            )}
           </Card>
 
           <p style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.6 }}>
@@ -2251,7 +2593,7 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
 
 // ── The site ──────────────────────────────────────────────────────────────
 
-export default function TeacherApp() {
+export default function TeacherApp({ resetToken }: { resetToken?: string } = {}) {
   // The signed-in account and the rows the server handed it. Which one of the
   // screens below shows is decided by that account — not by anything stored in
   // this browser — so a teacher on a borrowed laptop sees exactly her school.
@@ -2302,6 +2644,11 @@ export default function TeacherApp() {
       lastMileSchool: profile.lastMileSchool,
     };
   }, [profile, store.schools]);
+
+  // A reset link wins over the signed-in portal and the on-hold screen: the
+  // person opening it may be on a borrowed device or still holding a stale
+  // session, and the token itself is the proof. All hooks above run first.
+  if (resetToken) return <TeacherResetPassword token={resetToken} />;
 
   const signedIn = access.status === "teacher" && Boolean(school && profile);
 

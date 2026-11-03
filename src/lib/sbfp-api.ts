@@ -506,25 +506,26 @@ export const changeOwnPassword = createServerFn({ method: "POST" })
     }),
   );
 
-// ── Emailed password reset for the Division Office account ────────────────────
+// ── Emailed password reset ────────────────────────────────────────────────────
 
 export interface RequestResetInput {
   email: string;
 }
 
 /**
- * Ask for a reset link to be emailed to the Division Office address.
+ * Ask for a reset link to be emailed to an active SBFP account — either the
+ * Division Office or a School Portal account.
  *
  * Deliberately open (no session): the person using it cannot sign in. The answer
- * is the same whether or not the address holds the admin account — the UI shows
- * a neutral "if that address holds the account…" confirmation either way, so
- * this cannot be used to find out which address it is.
+ * is the same whether or not the address holds an account — both sign-in screens
+ * show a neutral "if that address holds the account…" confirmation either way,
+ * so this cannot be used to find out which addresses exist.
  *
  * `previewUrl` exists only on the in-memory preview database, where no mail key
  * is configured: it lets the flow be completed while building the app. A
  * deployed database never returns it.
  */
-export const requestAdminPasswordReset = createServerFn({ method: "POST" })
+export const requestPasswordReset = createServerFn({ method: "POST" })
   .validator((input: RequestResetInput) => input)
   .handler(async ({ data }) => {
     await requireSameSiteRequest();
@@ -541,11 +542,12 @@ export const requestAdminPasswordReset = createServerFn({ method: "POST" })
       return { ok: true as const, configured, delivered: false, previewUrl: null };
     }
 
-    const url = buildResetUrl(reset.token);
+    const url = buildResetUrl(reset.token, reset.role);
     const delivered = await sendPasswordResetEmail({
       to: reset.email,
       url,
       expiresMinutes: RESET_LINK_MINUTES,
+      role: reset.role,
     });
     const previewUrl = dbSource === "pglite" ? url : null;
     return { ok: true as const, configured, delivered, previewUrl };
@@ -557,20 +559,20 @@ export interface ResetPasswordWithTokenInput {
 }
 
 /**
- * Set the new Division Office password from the emailed token. Also open: the
- * token itself is the proof. It is single-use and expires (see
- * `resetPasswordWithToken`).
+ * Set a new password from the emailed token. Also open: the token itself is the
+ * proof. It is single-use and expires (see `resetPasswordWithToken`). Works for
+ * either role; the result says which sign-in page to return to.
  */
-export const resetAdminPasswordWithToken = createServerFn({ method: "POST" })
+export const resetPasswordWithToken = createServerFn({ method: "POST" })
   .validator((input: ResetPasswordWithTokenInput) => input)
   .handler(async ({ data }) =>
     settle(async () => {
       await requireSameSiteRequest();
       const { getSql } = await import("@/lib/db");
-      const { resetPasswordWithToken } = await import("./sbfp-accounts");
+      const { resetPasswordWithToken: applyPasswordReset } = await import("./sbfp-accounts");
       const sql = await getSql();
-      const email = await resetPasswordWithToken(sql, data.token, data.password);
-      return { email };
+      const account = await applyPasswordReset(sql, data.token, data.password);
+      return { email: account.email, role: account.role };
     }),
   );
 

@@ -679,28 +679,25 @@ describe("passwords", () => {
     assert.equal(await verifyPassword({ hash: credential.hash, password: "from-the-office" }), true);
   });
 
-  it("mints a reset link for the Division Office account only, stored as a hash", async () => {
-    // A teacher's address gets no link: the reset door belongs to the one account
-    // that cannot be re-issued by anyone else.
-    assert.equal(await createPasswordReset(sql, TEACHER_A), null);
-    assert.equal(await createPasswordReset(sql, "nobody@deped.gov.ph"), null);
-
-    const reset = await createPasswordReset(sql, ADMIN.toUpperCase());
-    assert.ok(reset, "the Division Office account gets a link");
-    assert.equal(reset.email, ADMIN, "the address is normalized to the account's own");
+  it("mints a reset link for an active account, stored as a hash", async () => {
+    const reset = await createPasswordReset(sql, TEACHER_A.toUpperCase());
+    assert.ok(reset, "a School Portal account gets a link");
+    assert.equal(reset.email, TEACHER_A, "the address is normalized to the account's own");
+    assert.equal(reset.role, "teacher", "the link says which sign-in page to use");
     assert.ok(reset.token.length >= 32, "the token is long enough to guess-proof it");
     assert.ok(reset.expiresAt);
 
     const stored = await sql.query<{ token_hash: string }>(
       "select token_hash from sbfp_admin_password_resets where lower(email) = $1",
-      [ADMIN],
+      [TEACHER_A],
     );
     assert.equal(stored.length, 1, "one live link per account");
     assert.equal(stored[0].token_hash, hashResetToken(reset.token));
     assert.notEqual(stored[0].token_hash, reset.token, "the token in the email is never stored");
 
     // Repeat clicks inside the minute are swallowed, so nobody can flood a mailbox.
-    assert.equal(await createPasswordReset(sql, ADMIN), null);
+    assert.equal(await createPasswordReset(sql, TEACHER_A), null);
+    assert.equal(await createPasswordReset(sql, "nobody@deped.gov.ph"), null);
   });
 
   it("issues a new link after the cooldown, replacing the old one", async () => {
@@ -714,7 +711,8 @@ describe("passwords", () => {
     assert.notEqual(second.token, first.token);
 
     const rows = await sql.query<{ n: number | string }>(
-      "select count(*) as n from sbfp_admin_password_resets",
+      "select count(*) as n from sbfp_admin_password_resets where lower(email) = $1",
+      [ADMIN],
     );
     assert.equal(Number(rows[0].n), 1, "the earlier link is replaced, not added");
 
@@ -736,8 +734,8 @@ describe("passwords", () => {
       "weak_password",
     );
 
-    const email = await resetPasswordWithToken(sql, reset.token, "admin-pass-2026");
-    assert.equal(email, ADMIN);
+    const result = await resetPasswordWithToken(sql, reset.token, "admin-pass-2026");
+    assert.deepEqual(result, { email: ADMIN, role: "admin" });
     const credential = await credentialState(sql, ADMIN);
     assert.ok(credential?.hasPassword);
     assert.equal(await verifyPassword({ hash: credential.hash, password: "admin-pass-2026" }), true);
@@ -754,6 +752,32 @@ describe("passwords", () => {
     );
     assert.equal(
       await refusal(() => resetPasswordWithToken(sql, "not-a-real-token", "another-pass-77")),
+      "reset_token_invalid",
+    );
+  });
+
+  it("sets a new School Portal password with the emailed link — once", async () => {
+    await sql`update sbfp_admin_password_resets set requested_at = now() - interval '2 minutes'`;
+    const reset = await createPasswordReset(sql, TEACHER_A);
+    assert.ok(reset);
+    assert.equal(reset.role, "teacher");
+
+    const result = await resetPasswordWithToken(sql, reset.token, "teacher-pass-2026");
+    assert.deepEqual(result, { email: TEACHER_A, role: "teacher" });
+    const credential = await credentialState(sql, TEACHER_A);
+    assert.ok(credential?.hasPassword);
+    assert.equal(
+      await verifyPassword({ hash: credential.hash, password: "teacher-pass-2026" }),
+      true,
+    );
+    assert.equal(
+      (await findAccountByEmail(sql, TEACHER_A))?.tempPassword,
+      false,
+      "the holder's own password is not temporary",
+    );
+
+    assert.equal(
+      await refusal(() => resetPasswordWithToken(sql, reset.token, "another-pass-77")),
       "reset_token_invalid",
     );
   });

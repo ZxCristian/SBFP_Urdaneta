@@ -1,5 +1,5 @@
 /**
- * Transactional email — the Division Office password reset, and nothing else.
+ * Transactional email — the password reset for either account role.
  *
  * The app has no mail server of its own; Resend's HTTP API is called with
  * `fetch`, so nothing is added to the client bundle and no SDK is needed. The
@@ -9,7 +9,11 @@
  *
  * A failed send is never thrown at the sign-in screen: the screen deliberately
  * says the same thing whether or not an address holds the account, so it does
- * not reveal the admin's email. The reason is logged on the server instead.
+ * not reveal which addresses exist. The reason is logged on the server instead.
+ *
+ * The reset tokens live in Supabase alongside the accounts. This app uses
+ * Better Auth with Supabase Postgres, not Supabase Auth, so Supabase's built-in
+ * auth emailer cannot send these messages; the existing Resend sender does.
  */
 import { getRequestUrl } from "@tanstack/react-start/server";
 
@@ -40,11 +44,12 @@ function configuredOrigin(value: string | undefined): string | null {
  * request's own origin. Restricting the value to an http(s) origin keeps a
  * malformed env value or a forged Host header from becoming the link's host.
  *
- * The reset token travels in the query string (not a path segment) so the
- * existing `/login` route can recognise it, and so TanStack's router does not
- * need a new route just to carry it.
+ * The reset token travels in the query string (not a path segment) so each
+ * sign-in route can recognise it without a second route just to carry it. The
+ * Division Office lands on `/login`; a school account lands on `/teacher` with
+ * the same form, in its own theme.
  */
-export function buildResetUrl(token: string): string {
+export function buildResetUrl(token: string, role: "admin" | "teacher"): string {
   // A reset link carries a bearer-like token, so its host must come from trusted
   // configuration first: APP_ORIGIN, then the platform's BETTER_AUTH_URL. Only
   // when neither exists (local preview) do we use the request's own origin.
@@ -60,7 +65,8 @@ export function buildResetUrl(token: string): string {
     }
   }
   const safe = origin ?? "http://localhost:8080";
-  return `${safe}/login?reset=${encodeURIComponent(token)}`;
+  const path = role === "teacher" ? "/teacher" : "/login";
+  return `${safe}${path}?reset=${encodeURIComponent(token)}`;
 }
 
 function escapeHtml(value: string): string {
@@ -80,6 +86,7 @@ export async function sendPasswordResetEmail(args: {
   to: string;
   url: string;
   expiresMinutes: number;
+  role: "admin" | "teacher";
 }): Promise<boolean> {
   const key = process.env.RESEND_API_KEY?.trim();
   if (!key) {
@@ -96,11 +103,17 @@ export async function sendPasswordResetEmail(args: {
   const minutes = args.expiresMinutes;
   const safeUrl = escapeHtml(url);
   const safeTo = escapeHtml(to);
+  const isTeacher = args.role === "teacher";
+  const product = isTeacher ? "SBFP School Portal" : "SBFP Division Console";
+  const account = isTeacher ? "School Portal account" : "Division Office account";
+  const subject = isTeacher
+    ? "Reset your SBFP School Portal password"
+    : "Reset your SBFP Division Console password";
 
   const text = [
-    "SBFP Division Console — password reset",
+    `${product} — password reset`,
     "",
-    `A new password was requested for the Division Office account (${to}).`,
+    `A new password was requested for the ${account} (${to}).`,
     `Open this link to choose one. It works once and expires in ${minutes} minutes:`,
     "",
     url,
@@ -114,13 +127,13 @@ export async function sendPasswordResetEmail(args: {
     <div style="padding:32px 16px;background:#080808;font-family:'Outfit',Helvetica,Arial,sans-serif;">
       <div style="max-width:520px;margin:0 auto;background:#111111;border:1px solid #232323;border-radius:14px;padding:28px 26px;color:#e2e2e2;">
         <div style="font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:#00ff87;font-weight:700;">
-          SBFP Division Console
+          ${product}
         </div>
         <h1 style="margin:14px 0 0;font-size:22px;line-height:1.25;font-weight:600;color:#e2e2e2;">
           Reset your password
         </h1>
         <p style="margin:12px 0 0;font-size:14px;line-height:1.65;color:#9a9a9a;">
-          A new password was requested for the Division Office account
+          A new password was requested for the ${account}
           <strong style="color:#e2e2e2;">${safeTo}</strong>.
         </p>
         <p style="margin:18px 0 22px;">
@@ -151,7 +164,7 @@ export async function sendPasswordResetEmail(args: {
       body: JSON.stringify({
         from,
         to: [to],
-        subject: "Reset your SBFP Division Console password",
+        subject,
         html,
         text,
       }),

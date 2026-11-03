@@ -621,7 +621,7 @@ export async function changeOwnPassword(
   `;
 }
 
-// ── Emailed password reset for the Division Office account ───────────────────
+// ── Emailed password reset ────────────────────────────────────────────────────
 
 /** How long an emailed reset link stays usable. */
 export const RESET_LINK_MINUTES = 30;
@@ -636,24 +636,28 @@ export function hashResetToken(token: string): string {
 }
 
 /**
- * Mint a reset token for the Division Office account, or null when the address
- * is not an active admin or a link was requested less than a minute ago.
+ * Mint a reset token for an active SBFP account, or null when no such account
+ * exists or a link was requested less than a minute ago.
  *
  * Null is deliberately the same answer for "no such account" and "too soon" —
- * the sign-in screen shows the same "if that address has the account" message
- * either way, so this endpoint cannot be used to discover the admin's email.
- * Asking again replaces the previous token, which invalidates the older link.
+ * both sign-in screens show the same "if that address has an account" message
+ * either way, so this endpoint cannot be used to discover an address. Asking
+ * again replaces the previous token, which invalidates the older link.
+ *
+ * This covers both the Division Office and School Portal accounts. The table
+ * predates school-account recovery and keeps its historical name; the rows are
+ * keyed by email and work for either role.
  */
 export async function createPasswordReset(
   sql: Sql,
   email: string,
-): Promise<{ email: string; token: string; expiresAt: string } | null> {
+): Promise<{ email: string; role: AccountRole; token: string; expiresAt: string } | null> {
   const normalized = normalizeEmail(email);
-  const admins = await sql<{ email: string }>`
-    select email from sbfp_accounts
-    where lower(email) = ${normalized} and role = 'admin' and status = 'active'
+  const accounts = await sql<{ email: string; role: string }>`
+    select email, role from sbfp_accounts
+    where lower(email) = ${normalized} and status = 'active'
   `;
-  const account = admins[0];
+  const account = accounts[0];
   if (!account) return null;
 
   const recent = await sql<{ recent: boolean }>`
@@ -676,12 +680,17 @@ export async function createPasswordReset(
       requested_at = now()
     returning expires_at
   `;
-  return { email: account.email, token, expiresAt: isoOf(rows[0]?.expires_at) };
+  return {
+    email: account.email,
+    role: account.role === "admin" ? "admin" : "teacher",
+    token,
+    expiresAt: isoOf(rows[0]?.expires_at),
+  };
 }
 
 /**
- * Set a new Division Office password from an emailed token. No session is
- * involved — this is the locked-out door.
+ * Set a new password from an emailed token. No session is involved — this is the
+ * locked-out door for either role.
  *
  * The password is validated before the token is consumed, the row is deleted as
  * it is read (so the link cannot be replayed), and the same refusal covers a
@@ -691,7 +700,7 @@ export async function resetPasswordWithToken(
   sql: Sql,
   token: string,
   password: string,
-): Promise<string> {
+): Promise<{ email: string; role: AccountRole }> {
   const problem = passwordProblem(password);
   if (problem) throw new AccountError("weak_password", problem);
 
@@ -709,7 +718,7 @@ export async function resetPasswordWithToken(
   }
 
   const account = await findAccountByEmail(sql, email);
-  if (!account || account.role !== "admin" || account.status !== "active") {
+  if (!account || account.status !== "active") {
     throw new AccountError(
       "reset_token_invalid",
       "That reset link is invalid or has expired. Request a new one.",
@@ -720,7 +729,7 @@ export async function resetPasswordWithToken(
   await sql`
     update sbfp_accounts set temp_password = false where lower(email) = ${normalizeEmail(email)}
   `;
-  return email;
+  return { email, role: account.role };
 }
 
 /**
