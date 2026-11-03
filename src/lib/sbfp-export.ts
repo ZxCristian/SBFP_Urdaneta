@@ -260,8 +260,11 @@ export async function buildSbfpWorkbook(
   ws.getCell(`B${signRow}`).font = { name: FONT, size: 10, bold: true };
   ws.getCell(`B${signRow + 2}`).value = "________________________";
   ws.getCell(`B${signRow + 2}`).font = { name: FONT, size: 11, bold: true };
-  ws.getCell(`B${signRow + 3}`).value = "School Head / Principal";
+  // The name above the designation, matching Form 2's signature block.
+  ws.getCell(`B${signRow + 3}`).value = school.principal || "";
   ws.getCell(`B${signRow + 3}`).font = { name: FONT, size: 11, bold: true };
+  ws.getCell(`B${signRow + 4}`).value = "School Head / Principal";
+  ws.getCell(`B${signRow + 4}`).font = { name: FONT, size: 10, bold: true };
 
   return (await workbook.xlsx.writeBuffer()) as unknown as ArrayBuffer;
 }

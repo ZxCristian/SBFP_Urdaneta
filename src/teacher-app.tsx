@@ -1,8 +1,8 @@
 /**
- * The teacher website — `/teacher`.
+ * The School Portal — `/teacher`.
  *
  * The school's side of the SBFP, deliberately a different product from the
- * district console: one school signs in (one teacher per school), keeps the
+ * district console: one school signs in (one account per school), keeps the
  * school information the district prints on the SBFP forms, encodes learner
  * records, and sends feedback up to the district office.
  *
@@ -377,8 +377,8 @@ const bmiTone = (s: string): "good" | "warn" | "danger" | "gold" | "muted" =>
 
 // ── Sign in ───────────────────────────────────────────────────────────────────
 // Accounts are issued by the Division Office, so there is nothing to register
-// here: a teacher signs in with the email and the temporary password she was
-// handed, and lands on her own school.
+// here: school personnel sign in with the email and temporary password they
+// were handed, and land on their own school.
 
 function TeacherSignIn({ notice }: { notice?: ReactNode }) {
   const [email, setEmail] = useState("");
@@ -431,8 +431,8 @@ function TeacherSignIn({ notice }: { notice?: ReactNode }) {
   return (
     <div className="mx-auto px-5 py-8 md:py-12" style={{ maxWidth: 1080 }}>
       <div className="grid grid-cols-1 lg:grid-cols-[1.05fr_1fr] gap-8 items-start">
-        {/* On a phone the sign-in card comes first, so a teacher who already has
-            her account does not scroll past the introduction to reach it. */}
+        {/* On a phone the sign-in card comes first, so school personnel who
+            already have an account do not scroll past the introduction to reach it. */}
         <div className="order-2 lg:order-1">
           <div className="flex items-center gap-3">
             <img src="/school-health-wheel.svg" alt="" width={46} height={46} />
@@ -444,7 +444,7 @@ function TeacherSignIn({ notice }: { notice?: ReactNode }) {
             </div>
           </div>
           <h1 style={{ fontSize: "clamp(26px, 7vw, 34px)", lineHeight: 1.15, fontWeight: 600, marginTop: 22, color: C.text }}>
-            SBFP Teacher Portal
+            SBFP School Portal
           </h1>
           <p style={{ fontSize: 15, color: C.sub, marginTop: 12, maxWidth: 520, lineHeight: 1.65 }}>
             Your school's own desk for the School-Based Feeding Program: the school information the division prints on
@@ -522,7 +522,7 @@ function TeacherSignIn({ notice }: { notice?: ReactNode }) {
                   autoComplete="username"
                   value={email}
                   onChange={(e) => { setEmail(e.target.value); setError(""); }}
-                  placeholder="teacher@depedurdaneta.gov.ph"
+                  placeholder="school@depedurdaneta.gov.ph"
                   style={control}
                 />
               </Field>
@@ -579,7 +579,7 @@ function AccountOnHold({ access }: { access: Access }) {
           work will be back.
         </p>
         <div className="mt-5 flex items-center gap-3 flex-wrap">
-          <UserButton />
+          <UserButton redirectTo="/teacher" />
         </div>
       </Card>
     </div>
@@ -594,21 +594,23 @@ function NoAccountNotice({ access }: { access: Access }) {
         {access.status === "admin" ? (
           <>
             <strong style={{ color: C.text }}>{access.email}</strong> holds the Division Office account, not a school's.
-            Issue each school its account from the Division Console's Teacher Accounts — or sign in below with a
+            Issue each school its account from the Division Console's School Accounts — or sign in below with a
             school's own account to work on that school.
           </>
         ) : (
           <>
-            You are signed in as <strong style={{ color: C.text }}>{access.email}</strong>, but no Teacher Portal account
+            You are signed in as <strong style={{ color: C.text }}>{access.email}</strong>, but no School Portal account
             has been issued for that email address. Sign in below with the account the Division Office gave your school.
           </>
         )}
       </p>
       <div className="mt-4 flex items-center gap-3 flex-wrap">
-        <a href="/" style={{ textDecoration: "none" }}>
-          <Button small>Division Console →</Button>
-        </a>
-        <UserButton />
+        {access.status === "admin" && (
+          <a href="/" style={{ textDecoration: "none" }}>
+            <Button small>Division Console →</Button>
+          </a>
+        )}
+        <UserButton redirectTo="/teacher" />
       </div>
     </Card>
   );
@@ -857,9 +859,9 @@ function ProfileScreen({ profile, school }: { profile: TeacherProfile; school: S
         )}
       </Card>
 
-      <Card title="Teacher" subtitle="Who handles SBFP for this school — one teacher per school.">
+      <Card title="School Personnel" subtitle="The person who handles SBFP for this school.">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Field text="Your name" required>
+          <Field text="Name of School Personnel" required>
             <input value={form.teacherName} onChange={e => set("teacherName", e.target.value)} style={control} />
           </Field>
           <Field text="Position / designation">
@@ -912,9 +914,9 @@ function ProfileScreen({ profile, school }: { profile: TeacherProfile; school: S
 }
 
 /**
- * The school's sign-in account: who it is for, and the password change a teacher
- * should make after her first sign-in with the temporary one the Division Office
- * handed her.
+ * The school's sign-in account: who it is for, and the password change the
+ * school personnel should make after their first sign-in with the temporary
+ * password the Division Office handed them.
  */
 function AccountCard({ profile }: { profile: TeacherProfile }) {
   const [current, setCurrent] = useState("");
@@ -1543,6 +1545,12 @@ function MyRecords({
           <p className="text-xs mt-0.5" style={{ color: C.dim }}>
             {school.name} · SBFP Form 1A · sorted Kinder → Grade 6 · {uniqueCount(mine)} students · {mine.length} period records
           </p>
+          <p className="text-[11px] mt-1" style={{ color: C.sub }}>
+            School Head / Principal:{" "}
+            <strong style={{ fontWeight: 600, color: school.principal ? C.text : C.dim }}>
+              {school.principal || "Not filled in yet"}
+            </strong>
+          </p>
         </div>
         <div className="flex gap-2">
           <button
@@ -1834,7 +1842,7 @@ function FeedbackScreen({ profile, school }: { profile: TeacherProfile; school: 
       message: message.trim(),
       createdAt: new Date().toISOString().slice(0, 10),
       status: "New",
-      origin: "Teacher Portal",
+      origin: "School Portal",
     };
     sendFeedback(entry);
     setMessage("");
@@ -2305,12 +2313,12 @@ export default function TeacherApp() {
   return (
     <div style={{ minHeight: "100dvh", background: C.bg, color: C.text, fontFamily: font }}>
       <header className="app-topbar" style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, position: "sticky", top: 0, zIndex: 10 }}>
-        <div className="mx-auto px-5" style={{ maxWidth: tab === "summary" ? 1560 : tab === "records" ? 1520 : 1080 }}>
+        <div className="mx-auto px-5" style={{ maxWidth: tab === "summary" ? 1680 : tab === "records" ? 1680 : 1080 }}>
           <div className="flex items-center gap-3 py-3 flex-wrap">
             <a href="/teacher" className="flex items-center gap-3" style={{ textDecoration: "none" }}>
               <img src="/school-health-wheel.svg" alt="" width={36} height={36} />
               <span>
-                <span style={{ display: "block", fontSize: 15, fontWeight: 600, color: C.text }}>SBFP Teacher Portal</span>
+                <span style={{ display: "block", fontSize: 15, fontWeight: 600, color: C.text }}>SBFP School Portal</span>
                 <span style={{ display: "block", fontSize: 11, color: C.dim }}>
                   Urdaneta City Schools Division · SY {formatSchoolYear(store.activeSy)}
                 </span>
@@ -2323,7 +2331,7 @@ export default function TeacherApp() {
                     <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>{profile.teacherName}</div>
                     <div style={{ fontSize: 11, color: C.dim }}>{school.name}</div>
                   </div>
-                  <UserButton />
+                  <UserButton redirectTo="/teacher" />
                 </>
               )}
             </div>
@@ -2388,12 +2396,12 @@ export default function TeacherApp() {
             <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.65 }}>
               The account <strong style={{ color: C.text }}>{access.email}</strong> is set to a school the division
               console no longer has on file. Ask the Division Office to point your account at the right school from
-              Teacher Accounts.
+              School Accounts.
             </p>
           </Card>
         </div>
       ) : (
-        <main className="mx-auto px-5 py-6" style={{ maxWidth: tab === "summary" ? 1560 : tab === "records" ? 1520 : 1080 }}>
+        <main className="mx-auto px-5 py-6" style={{ maxWidth: tab === "summary" ? 1680 : tab === "records" ? 1680 : 1080 }}>
           {tab === "overview" && <Overview profile={profile} school={school} go={setTab} />}
           {tab === "profile" && <ProfileScreen profile={profile} school={school} />}
           {tab === "entry" && (
@@ -2417,7 +2425,7 @@ export default function TeacherApp() {
 
           <footer className="flex items-center justify-between gap-3 flex-wrap" style={{ marginTop: 34, paddingTop: 16, borderTop: `1px solid ${C.border}`, fontSize: 11.5, color: C.dim }}>
             <span>
-              SBFP Teacher Portal · one account per school · saved to the division's records server
+              SBFP School Portal · one account per school · saved to the division's records server
             </span>
           </footer>
         </main>

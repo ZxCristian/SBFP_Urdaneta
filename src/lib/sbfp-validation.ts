@@ -1,7 +1,7 @@
 /**
  * Learner-record checks, shared by both forms and the server.
  *
- * The district console and the teacher portal both encode learner records, and
+ * The district console and the school portal both encode learner records, and
  * the server saves whatever they send. A record with 0 kg and 0 cm used to be
  * accepted end to end — it counted as a learner in the district totals while
  * carrying no BMI/HFA classification. The same function is used in all three

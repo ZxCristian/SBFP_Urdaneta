@@ -9,7 +9,7 @@
  *                  school's teacher (the account the Division Office issued).
  *  - `profiles`  — every school's SBFP form header the caller may see, keyed by
  *                  school, with the teacher who holds the account.
- *  - `records`   — learner records encoded through the Teacher Portal.
+ *  - `records`   — learner records encoded through the School Portal.
  *  - `feedbacks` — what a school sent up, with the Division Office's reply on the
  *                  same row so the school sees the answer.
  *
@@ -122,7 +122,7 @@ export interface TeacherStoreState {
   activeSchoolId: string | null;
   /** The school year the district is working in (e.g. "2025-2026"). */
   activeSy: string;
-  /** Learner records encoded through the Teacher Portal. */
+  /** Learner records encoded through the School Portal. */
   records: Student[];
   /** Feedback the schools sent up, with the Division Office's reply merged in. */
   feedbacks: SchoolFeedback[];
@@ -209,7 +209,7 @@ export const isTeacherFeedback = (f: { id: string }) => f.id.startsWith("tf_");
 
 /**
  * One read per resolved session, shared by both sites: the district console and
- * the teacher portal both call `syncWorkspace()`, and they must not race two
+ * the school portal both call `syncWorkspace()`, and they must not race two
  * reads on the same email.
  */
 let inFlight: Promise<void> | null = null;

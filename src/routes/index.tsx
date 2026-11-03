@@ -1,7 +1,7 @@
 /**
  * The district console — `/`.
  *
- * The Division Office's own product, and the only page that issues Teacher
+ * The Division Office's own product, and the only page that issues School
  * Portal accounts, so it is closed: a signed-out visitor is sent to the sign-in
  * page, and a teacher is sent to her own site instead of being shown a console
  * she has no account for.

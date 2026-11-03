@@ -360,7 +360,7 @@ export interface NewTeacherAccountInput {
   schoolId: string;
 }
 
-/** Issue a Teacher Portal account for one school (Division Office only). */
+/** Issue a School Portal account for one school (Division Office only). */
 export const createTeacherAccount = createServerFn({ method: "POST" })
   .validator((input: NewTeacherAccountInput) => input)
   .middleware([authMiddleware])
@@ -441,7 +441,7 @@ export const saveOwnTeacherDetails = createServerFn({ method: "POST" })
     const { sql, access } = await requireAccess(await sessionEmail(context));
     const { updateOwnTeacherDetails, AccountError } = await import("./sbfp-accounts");
     if (access.account.role !== "teacher") {
-      throw new AccountError("forbidden", "Only a Teacher Portal account can edit these details.");
+      throw new AccountError("forbidden", "Only a School Portal account can edit these details.");
     }
     const account = await updateOwnTeacherDetails(sql, access.email, data);
     return { account };
@@ -754,7 +754,7 @@ export interface FeedbackInput {
     createdAt: string;
     status?: FeedbackStatus;
     response?: string;
-    origin?: "Teacher Portal";
+    origin?: "School Portal";
   };
 }
 
@@ -778,7 +778,7 @@ export const sendSchoolFeedback = createServerFn({ method: "POST" })
           role: access.account.position || "SBFP Feeding Focal Person",
           status: "New" as const,
           response: undefined,
-          origin: "Teacher Portal" as const,
+          origin: "School Portal" as const,
         };
     await insertFeedback(sql, schoolId, entry as never, access.email);
     return { ok: true as const };

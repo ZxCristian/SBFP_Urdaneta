@@ -71,7 +71,7 @@ import type {
 
 // ── Domain ────────────────────────────────────────────────────────────────────
 // Types, the period/status lists and the WHO classification live in
-// `@/lib/sbfp-domain` so the teacher portal can import them without pulling
+// `@/lib/sbfp-domain` so the school portal can import them without pulling
 // this console (and its screens) into the teacher route's bundle. The
 // re-export keeps this module's public surface unchanged.
 export * from "@/lib/sbfp-domain";
@@ -219,7 +219,7 @@ function Field({ label, children, span, t }: { label: string; children: React.Re
 function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, toggleTheme, schools, registeredSchools, activeSy, mobileOpen, onNavigate, unreadFeedback, trashCount }: {
   view:View; setView:(v:View)=>void; selectedSchool:School|null; setSelectedSchool:(s:School|null)=>void;
   themeMode:"dark"|"light"; toggleTheme:()=>void; schools:School[];
-  /** How many schools hold a Teacher Portal account issued from this console. */
+  /** How many schools hold a School Portal account issued from this console. */
   registeredSchools:number;
   /** The school year every screen below is working in. */
   activeSy:string;
@@ -235,14 +235,14 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
     { id:"district", label:"District Dashboard", icon:"◎" },
     { id:"feedback", label:"Feedbacks", icon:"✉" },
     { id:"schools", label:"All Schools", icon:"◉" },
-    { id:"accounts", label:"Teacher Accounts", icon:"⚙" },
+    { id:"accounts", label:"School Accounts", icon:"⚙" },
     { id:"years", label:"School Years", icon:"▤" },
     { id:"dashboard", label:"Dashboard", icon:"▦", requiresSchool:true },
     { id:"records", label:"Student Records", icon:"☰", requiresSchool:true },
-    { id:"trash", label:"Trash", icon:"♲" },
     { id:"entry", label:"Data Entry", icon:"✎", requiresSchool:true },
     { id:"table", label:"Summary Table", icon:"≡", requiresSchool:true },
     { id:"analytics", label:"Analytics", icon:"↗", requiresSchool:true },
+    { id:"trash", label:"Trash", icon:"♲" },
   ];
   return (
     <aside style={{ borderRight:`1px solid ${t.border}`, background:t.surface }}
@@ -301,11 +301,11 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
           <span className="text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>Signed in</span>
           <UserButton />
         </div>
-        <a href="/teacher" title="The website each school's teacher signs in to"
+        <a href="/teacher" title="The website each school's personnel signs in to"
           className="w-full flex items-center gap-2 px-3 py-2 rounded-sm text-xs transition-all"
           style={{ border:`1px solid ${t.border}`, background:t.surface2, color:t.sub, textDecoration:"none" }}>
           <span>⇱</span>
-          <span className="flex-1">Teacher Portal</span>
+          <span className="flex-1">School Portal</span>
           <span style={{ fontFamily:"'JetBrains Mono',monospace", color: registeredSchools ? t.accent : t.dim }}>
             {registeredSchools}/{schools.length}
           </span>
@@ -395,7 +395,7 @@ function DistrictDashboard({ students, schools, feedbacks, activeSy, onOpenFeedb
         <div style={{ border:`1px dashed ${t.border}`, background:t.surface }} className="p-5">
           <p className="text-sm" style={{ color:t.sub }}>No learner records yet.</p>
           <p className="text-xs mt-1" style={{ color:t.dim }}>
-            Schools encode their learners in the Teacher Portal. The totals and the BMI, HFA and period charts fill in as those records arrive.
+            Schools encode their learners in the School Portal. The totals and the BMI, HFA and period charts fill in as those records arrive.
           </p>
         </div>
       )}
@@ -698,7 +698,7 @@ function Feedbacks({ feedbacks, setFeedbacks, schools, defaultSchool }: {
             {feedbacks.length === 0 ? (
               <>
                 <p className="text-sm" style={{ color:t.sub }}>No feedback yet.</p>
-                <p className="text-xs mt-1" style={{ color:t.dim }}>Schools send feedback from the Teacher Portal, or record one here with ＋ Record Feedback.</p>
+                <p className="text-xs mt-1" style={{ color:t.dim }}>Schools send feedback from the School Portal, or record one here with ＋ Record Feedback.</p>
               </>
             ) : (
               <>
@@ -719,10 +719,10 @@ function Feedbacks({ feedbacks, setFeedbacks, schools, defaultSchool }: {
                   {school && <Pill label={school.type === "Elementary" ? "ES" : "HS"} color={school.type === "Elementary" ? t.blue : t.lime} />}
                   <span className="text-sm font-medium" style={{ color:t.text }}>{school?.name ?? "Unknown school"}</span>
                   <Pill label={f.category} color={categoryColor(f.category, t)} />
-                  {f.origin === "Teacher Portal" && (
-                    <span title="The school sent this from the Teacher Portal"
+                  {f.origin && (
+                    <span title="The school sent this from the School Portal"
                       className="text-[9px] px-1.5 py-0.5 rounded-sm" style={{ border:`1px solid ${t.border}`, color:t.sub, background:t.surface2 }}>
-                      ⇱ Teacher Portal
+                      ⇱ School Portal
                     </span>
                   )}
                 </div>
@@ -1050,7 +1050,7 @@ function SchoolsList({ students, schools, setSchools, setStudents, onSelect }: {
               {count > 0
                 ? " and its " + count + (count === 1 ? " learner record is" : " learner records are") + " deleted with it"
                 : ""}
-              , including the records the school encoded from the Teacher Portal.{" "}
+              , including the records the school encoded from the School Portal.{" "}
               <strong style={{ color: t.text }}>This cannot be undone.</strong>
             </>
           );
@@ -1105,7 +1105,7 @@ function Dashboard({ students, school, activeSy }: { students:Student[]; school:
         <div style={{ border:`1px dashed ${t.border}`, background:t.surface }} className="p-5">
           <p className="text-sm" style={{ color:t.sub }}>No learner records yet.</p>
           <p className="text-xs mt-1" style={{ color:t.dim }}>
-            Add this school's learners from Student Records, or wait for its teacher to submit them through the Teacher Portal.
+            Add this school's learners from Student Records, or wait for the school to submit them through the School Portal.
           </p>
         </div>
       )}
@@ -1328,7 +1328,7 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
       return;
     }
     if (!form.name.trim()) return;
-    // Same rule as the teacher portal and the server: an unweighed learner is
+    // Same rule as the school portal and the server: an unweighed learner is
     // not a record. Without this, 0 kg / 0 cm was saved and counted as a
     // learner with no BMI classification.
     const problem = learnerProblem({

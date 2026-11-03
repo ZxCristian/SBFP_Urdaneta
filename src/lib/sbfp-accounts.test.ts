@@ -337,7 +337,7 @@ describe("the Division Office account", () => {
         message: "Baseline complete.",
         createdAt: "2026-08-01",
         status: "New",
-        origin: "Teacher Portal",
+        origin: "School Portal",
       },
       TEACHER_A,
     );
@@ -363,7 +363,7 @@ describe("the Division Office account", () => {
     assert.equal(mine.records[0].schoolId, SCHOOL_A);
     assert.equal(mine.records[0].gradeLevel, "Grade 3");
     assert.equal(mine.records[0].bmi, "16.09");
-    assert.equal(mine.feedbacks[0].origin, "Teacher Portal");
+    assert.equal(mine.feedbacks[0].origin, "School Portal");
     assert.equal(mine.feedbacks[0].createdAt, "2026-08-01");
     assert.equal(mine.accounts[0].recordCount, 1);
     assert.equal(mine.accounts[0].feedbackCount, 1);
@@ -428,7 +428,7 @@ describe("the Division Office account", () => {
     assert.equal(await countAdmins(sql), 1);
   });
 
-  it("cannot use the Teacher Portal's self-profile edit", async () => {
+  it("cannot use the School Portal's self-profile edit", async () => {
     assert.equal(
       await refusal(() => updateOwnTeacherDetails(sql, ADMIN, { fullName: "Not a teacher" })),
       "forbidden",
@@ -797,7 +797,7 @@ describe("school data", () => {
         message: "  Needs a reply  ",
         createdAt: "not-a-date",
         status: "New",
-        origin: "Teacher Portal",
+        origin: "School Portal",
       },
       "teacher.b@depedurdaneta.gov.ph",
     );

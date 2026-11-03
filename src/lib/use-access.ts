@@ -2,7 +2,7 @@
  * Which product the signed-in visitor gets.
  *
  * Both sites need the same three-way answer — is the session still resolving, is
- * this person signed in at all, and does the email hold a Teacher Portal account,
+ * this person signed in at all, and does the email hold a School Portal account,
  * the Division Office account, or nothing yet — so it is decided in one place
  * instead of being re-derived (and re-got-wrong) on each page.
  *

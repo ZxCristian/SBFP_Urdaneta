@@ -3,7 +3,7 @@
  *
  * This is the door to the district console (`/`). The Division Office account is
  * the one account the Division Office itself holds, and it is the only account
- * that can issue Teacher Portal accounts, so the page has two faces:
+ * that can issue School Portal accounts, so the page has two faces:
  *
  *  - **No account exists yet** → first-time setup. Two ways in: make the email of
  *    the session you already have the Division Office (that is the case behind
@@ -11,8 +11,8 @@
  *    password is typed), or create it with an email and a password.
  *  - **An account exists** → sign in with the email and password of that account.
  *
- * A teacher who lands here is pointed at the Teacher Portal instead of being left
- * on a form she cannot use.
+ * School personnel who land here are pointed at the School Portal instead of
+ * being left on a form they cannot use.
  */
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { createFileRoute, Navigate, Link } from "@tanstack/react-router";
@@ -259,7 +259,7 @@ export function LoginScreen({
           <p style={{ fontSize: 15, color: T.sub, marginTop: 12, maxWidth: 520, lineHeight: 1.6 }}>
             The Division Office's own desk for the feeding program: the division master list,
             the Summary Tables and analytics, the feedback the schools send up — and the
-            Teacher Portal accounts you issue to each school.
+            School Portal accounts you issue to each school.
           </p>
 
           <div className="flex flex-col gap-3 mt-8">
@@ -272,7 +272,7 @@ export function LoginScreen({
               [
                 "2",
                 "You issue one account per school",
-                "Teacher Accounts hands a school its sign-in email and a temporary password — one account, one school.",
+                "School Accounts hands a school its sign-in email and a temporary password — one account, one school.",
               ],
               [
                 "3",
@@ -312,9 +312,9 @@ export function LoginScreen({
         <div className="flex flex-col gap-4 order-1 lg:order-2">
           <AdminPanel access={access} resetToken={resetToken} onResetDone={onResetDone} />
           <p style={{ fontSize: 12, color: T.dim, lineHeight: 1.6 }}>
-            A school's teacher signs in on the{" "}
+            A school's personnel signs in on the{" "}
             <Link to="/teacher" style={{ color: T.accent, textDecoration: "none" }}>
-              Teacher Portal
+              School Portal
             </Link>{" "}
             with the account the Division Office issued.
           </p>
@@ -371,15 +371,15 @@ function AdminPanel({
   if (access.status === "teacher") {
     return (
       <div style={card}>
-        <h2 style={{ fontSize: 17, fontWeight: 600 }}>You're signed in to the Teacher Portal</h2>
+        <h2 style={{ fontSize: 17, fontWeight: 600 }}>You're signed in to the School Portal</h2>
         <p style={{ fontSize: 13, color: T.sub, marginTop: 10, lineHeight: 1.6 }}>
-          <strong style={{ color: T.text }}>{access.email}</strong> holds a school's Teacher
+          <strong style={{ color: T.text }}>{access.email}</strong> holds a School
           Portal account, not the Division Office account. Open the portal to work on your
           school, or sign in below with the Division Office credentials.
         </p>
         <div className="mt-5">
           <Link to="/teacher" style={{ textDecoration: "none" }}>
-            <Submit type="button">Open the Teacher Portal →</Submit>
+            <Submit type="button">Open the School Portal →</Submit>
           </Link>
         </div>
         <div style={{ marginTop: 20, paddingTop: 18, borderTop: `1px solid ${T.border}` }}>
@@ -405,7 +405,7 @@ function AdminPanel({
         <h2 style={{ fontSize: 17, fontWeight: 600 }}>This account is on hold</h2>
         <p style={{ fontSize: 13, color: T.sub, marginTop: 10, lineHeight: 1.6 }}>
           The Division Office put <strong style={{ color: T.text }}>{access.email}</strong> on
-          hold. Another Division Office account can lift it from Teacher Accounts.
+          hold. Another Division Office account can lift it from School Accounts.
         </p>
       </div>
     );
@@ -430,7 +430,7 @@ function AdminPanel({
         </h2>
         <p style={{ fontSize: 13, color: T.sub, marginTop: 8, lineHeight: 1.6 }}>
           No Division Office account exists yet. It is created once: from then on it is the only
-          account that can issue Teacher Portal accounts, and this setup door closes.
+          account that can issue School Portal accounts, and this setup door closes.
         </p>
 
         {access.email && (

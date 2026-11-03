@@ -1,5 +1,5 @@
 /**
- * SBFP Form 2 — the same paper sheet in the Division console and the Teacher
+ * SBFP Form 2 — the same paper sheet in the Division console and the School
  * Portal.
  *
  * The form is printed landscape: a letterhead, the school information block,
@@ -335,7 +335,7 @@ export function Form2Sheet({
 
       <p style={{ fontSize: 9, lineHeight: 1.5, color: "#333", marginTop: 20 }}>{FORM2_NOTE}</p>
       <p style={{ fontSize: 8.5, color: "#666", marginTop: 4 }}>
-        Generated from {cohort === "SPED" ? "the Teacher Portal" : "the SBFP Summary"} · {period} period · School Year {formatSchoolYear(sy)}
+        Generated from {cohort === "SPED" ? "the School Portal" : "the SBFP Summary"} · {period} period · School Year {formatSchoolYear(sy)}
       </p>
     </div>
   );

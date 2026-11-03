@@ -20,7 +20,7 @@
  * stays visible.
  *
  * Dependency-free and browser-safe: both sign-in doors (the Division Console and
- * the Teacher Portal) use it, and so does its test.
+ * the School Portal) use it, and so does its test.
  */
 
 /** The subset of Better Auth's client error this needs. */

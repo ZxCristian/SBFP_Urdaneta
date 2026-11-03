@@ -1,11 +1,11 @@
 /**
- * Teacher Accounts — where the Division Office issues and runs the schools'
- * Teacher Portal accounts.
+ * School Accounts — where the Division Office issues and runs the schools'
+ * School Portal accounts.
  *
  * One account per school: the panel creates it (email + a temporary password to
  * hand over), shows what each school has sent up, and lets the Division Office
  * put an account on hold, move it to another school, hand out a new password, or
- * take it away. The account itself is what authorizes a teacher — see
+ * take it away. The account itself is what authorizes school personnel — see
  * `@/lib/sbfp-accounts` — so nothing here is decoration: without a row on this
  * page, a school cannot reach the portal at all.
  *
@@ -264,11 +264,11 @@ export default function AccountsPanel({
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-end gap-4">
         <div className="flex-1 min-w-[240px]">
-          <h2 style={{ fontSize: 19, fontWeight: 600, color: t.text }}>Teacher Accounts</h2>
+          <h2 style={{ fontSize: 19, fontWeight: 600, color: t.text }}>School Accounts</h2>
           <p style={{ fontSize: 12.5, color: t.dim, marginTop: 6, maxWidth: 720, lineHeight: 1.6 }}>
-            One account per school — the email and temporary password you issue here are what a
-            teacher signs in with on the Teacher Portal. A school without an account cannot reach
-            the portal at all.
+            One account per school — the email and temporary password you issue here are what the
+            school personnel signs in with on the School Portal. A school without an account cannot
+            reach the portal at all.
           </p>
         </div>
         <div className="flex items-center gap-4">
@@ -283,7 +283,7 @@ export default function AccountsPanel({
             </div>
           ))}
           <Btn t={t} tone="accent" onClick={() => { setCreating(true); setError(""); }}>
-            ＋ New teacher account
+            ＋ New school account
           </Btn>
         </div>
       </div>
@@ -324,9 +324,9 @@ export default function AccountsPanel({
       {accounts.length === 0 ? (
         <Card t={t}>
           <p style={{ fontSize: 13.5, color: t.sub, lineHeight: 1.6 }}>
-            No school has an account yet. Create the first one: pick the school, name the teacher,
-            and hand over the email and temporary password — she can then sign in at the Teacher
-            Portal and encode her school's learner records.
+            No school has an account yet. Create the first one: pick the school, name the school
+            personnel, and hand over the email and temporary password — they can then sign in at the
+            School Portal and encode the school's learner records.
           </p>
         </Card>
       ) : (
@@ -503,13 +503,13 @@ export default function AccountsPanel({
 function CredentialCard({ t, slip, onClose }: { t: TC; slip: CredentialSlip; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   const text = [
-    "SBFP Teacher Portal — sign-in",
+    "SBFP School Portal — sign-in",
     `School: ${slip.schoolName}`,
-    `Teacher: ${slip.teacherName || "(name to follow)"}`,
+    `School Personnel: ${slip.teacherName || "(name to follow)"}`,
     `Email: ${slip.email}`,
     `Temporary password: ${slip.password}`,
     "",
-    "Open the Teacher Portal, sign in with the email and password above, then change the password in My Profile → Account.",
+    "Open the School Portal, sign in with the email and password above, then change the password in My Profile → Account.",
   ].join("\n");
   return (
     <div
@@ -576,8 +576,8 @@ function CredentialCard({ t, slip, onClose }: { t: TC; slip: CredentialSlip; onC
             </div>
           </div>
           <p style={{ fontSize: 11.5, color: t.dim, marginTop: 10, lineHeight: 1.6, maxWidth: 560 }}>
-            This is the only time the password is shown. The teacher can change it herself in
-            My Profile → Account on the Teacher Portal; if it is lost, issue a new one from here.
+            This is the only time the password is shown. The account holder can change it in
+            My Profile → Account on the School Portal; if it is lost, issue a new one from here.
           </p>
         </div>
         <div className="flex flex-col gap-2 items-end">
@@ -634,14 +634,14 @@ function CreateAccountForm({
   return (
     <Card
       t={t}
-      title="New teacher account"
-      subtitle="One account per school. The email and temporary password below are what the teacher signs in with — they are shown once, right after you create it."
+      title="New school account"
+      subtitle="One account per school. The email and temporary password below are what the school personnel signs in with — they are shown once, right after you create it."
       action={<Btn t={t} small onClick={onCancel}>Cancel</Btn>}
     >
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          if (!fullName.trim()) { setError("Enter the teacher's name."); return; }
+          if (!fullName.trim()) { setError("Enter the school personnel's name."); return; }
           if (!schoolId) { setError("Choose the school this account is for."); return; }
           if (!email.trim()) { setError("Enter the sign-in email."); return; }
           if (password.length < MIN_PASSWORD_LENGTH) {
@@ -675,7 +675,7 @@ function CreateAccountForm({
       >
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <label>
-            <span style={{ ...label, color: t.dim }}>Teacher's name *</span>
+            <span style={{ ...label, color: t.dim }}>School Personnel's name *</span>
             <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Last, First Middle" style={input(t)} />
           </label>
           <label>
@@ -711,7 +711,7 @@ function CreateAccountForm({
           </label>
           <label>
             <span style={{ ...label, color: t.dim }}>Sign-in email *</span>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="teacher@depedurdaneta.gov.ph" style={input(t)} />
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="school@depedurdaneta.gov.ph" style={input(t)} />
           </label>
         </div>
 
@@ -802,7 +802,7 @@ function EditAccountForm({
     >
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <label>
-          <span style={{ ...label, color: t.dim }}>Teacher's name</span>
+          <span style={{ ...label, color: t.dim }}>School Personnel's name</span>
           <input value={fullName} onChange={(e) => setFullName(e.target.value)} style={input(t)} />
         </label>
         <label>

@@ -16,7 +16,7 @@
  *  - `sbfp_school_profiles` — the school information block the SBFP forms print,
  *                             owned by the school so it survives a change of
  *                             teacher or of account.
- *  - `sbfp_records`         — learner records encoded through the Teacher Portal.
+ *  - `sbfp_records`         — learner records encoded through the School Portal.
  *  - `sbfp_feedback`        — what a school sent up, with the Division Office's
  *                             reply stored on the same row.
  *
@@ -256,7 +256,7 @@ export async function findAccountByEmail(
 /**
  * Every account, newest first — the Division Office's accounts panel.
  *
- * `only` narrows the read to those school ids. The teacher portal only ever
+ * `only` narrows the read to those school ids. The school portal only ever
  * shows one school, so without it every workspace load counted records and
  * feedback for all 58 accounts just to throw 57 away.
  */
@@ -488,7 +488,7 @@ export async function updateOwnTeacherDetails(
   const current = await findAccountByEmail(sql, email);
   if (!current) throw new AccountError("not_found", "That account no longer exists.");
   if (current.role !== "teacher") {
-    throw new AccountError("forbidden", "Only a Teacher Portal account can edit these details.");
+    throw new AccountError("forbidden", "Only a School Portal account can edit these details.");
   }
   const fullName = (patch.fullName ?? current.fullName).trim();
   if (!fullName) {
@@ -1201,7 +1201,7 @@ function toFeedback(row: FeedbackDbRow): SchoolFeedback {
     createdAt: isoOf(row.created_at).slice(0, 10),
     status: row.status as FeedbackStatus,
     ...(response ? { response } : {}),
-    ...(row.origin ? { origin: "Teacher Portal" as const } : {}),
+    ...(row.origin ? { origin: "School Portal" as const } : {}),
   };
 }
 

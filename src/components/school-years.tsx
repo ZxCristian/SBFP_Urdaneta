@@ -498,7 +498,7 @@ export default function SchoolYears({
                   <p className="text-xs mt-1" style={{ color: t.dim }}>
                     {archive.feedbacks.length > 0
                       ? "The feedback below was still sent up."
-                      : "Nothing was submitted through the Teacher Portal."}
+                      : "Nothing was submitted through the School Portal."}
                   </p>
                 </div>
               ) : (

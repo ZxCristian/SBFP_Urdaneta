@@ -2,7 +2,7 @@
  * The SBFP domain — everything both websites share, and nothing that renders.
  *
  * This module used to live inside `src/sbfp-app.tsx` (the district console).
- * The teacher portal only needs the types, the period/status lists and the WHO
+ * The school portal only needs the types, the period/status lists and the WHO
  * classification helpers, but importing them from the console pulled the whole
  * console into the teacher route's bundle. Keeping the domain here means a
  * teacher downloads her own page and no district UI.
@@ -128,10 +128,10 @@ export interface SchoolFeedback {
   response?: string;
   /**
    * Set when the entry came in through the teacher website rather than the
-   * district's own Feedbacks form — the feed shows a "Teacher Portal" tag so
+   * district's own Feedbacks form — the feed shows a "School Portal" tag so
    * the district can tell a school's submission from its own records.
    */
-  origin?: "Teacher Portal";
+  origin?: "School Portal";
 }
 export const FEEDBACK_CATEGORIES: FeedbackCategory[] = [
   "Feeding Implementation","Nutrition Data","Supplies & Logistics",
