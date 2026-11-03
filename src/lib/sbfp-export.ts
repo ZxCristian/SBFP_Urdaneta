@@ -258,9 +258,8 @@ export async function buildSbfpWorkbook(
   const signRow = lastData + 2;
   ws.getCell(`B${signRow}`).value = "Approved by:";
   ws.getCell(`B${signRow}`).font = { name: FONT, size: 10, bold: true };
-  ws.getCell(`B${signRow + 2}`).value = "________________________";
-  ws.getCell(`B${signRow + 2}`).font = { name: FONT, size: 11, bold: true };
-  // The name above the designation, matching Form 2's signature block.
+  // The name above the designation, matching Form 2's signature block — no
+  // ruled line over the School Head / Principal.
   ws.getCell(`B${signRow + 3}`).value = school.principal || "";
   ws.getCell(`B${signRow + 3}`).font = { name: FONT, size: 11, bold: true };
   ws.getCell(`B${signRow + 4}`).value = "School Head / Principal";

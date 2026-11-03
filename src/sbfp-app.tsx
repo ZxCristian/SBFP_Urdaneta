@@ -25,6 +25,7 @@ import AccountsPanel from "@/components/accounts-panel";
 import SchoolYears from "@/components/school-years";
 import { ConfirmDialog, type ConfirmPalette } from "@/components/confirm-dialog";
 import { Form2Sheet } from "@/components/form2-sheet";
+import { ImportLearnersDialog } from "@/components/import-learners-dialog";
 import { manualTotal, useForm2Extras } from "@/lib/use-form2-extras";
 import {
   BMI_STATUSES,
@@ -1164,6 +1165,11 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
   const [formError, setFormError] = useState("");
   /** The past year this learner's record was found in, or null. */
   const [previousSy, setPreviousSy] = useState<string | null>(null);
+  /** The Form 1A workbook import opened from this screen. */
+  const [importOpen, setImportOpen] = useState(false);
+  const [importNotice, setImportNotice] = useState<{
+    count: number; period: Period; invalid: number; duplicates: number; fileName: string;
+  } | null>(null);
   /** The Division Office answered the previous-years question itself. */
   const previousTouched = useRef(false);
   /** The current "Yes" was set by the archive lookup, not by a person. */
@@ -1384,14 +1390,26 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
           <p className="text-xs mt-0.5" style={{ color:t.dim }}>{school.name}</p>
         </div>
         <div className="flex flex-col items-end gap-1">
-          <div ref={periodRef} className="flex gap-1.5" tabIndex={-1}
-            style={periodError ? { outline: `2px solid ${t.danger}`, outlineOffset: 2, borderRadius: 4, padding: 2 } : undefined}>
-            {PERIODS.map(p => (
-              <button key={p} onClick={() => handlePeriodChange(p)} className="px-3 py-1.5 text-xs rounded-sm cursor-pointer border transition-colors"
-                style={period===p ? { background:t.period[p]+"20", color:t.period[p], borderColor:t.period[p]+"40" } : { background:t.surface, color:t.dim, borderColor:t.border }}>
-                {p}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {!editingStudent && (
+              <button
+                type="button"
+                onClick={() => { setImportOpen(true); setImportNotice(null); }}
+                className="px-3 py-1.5 text-xs font-semibold rounded-sm cursor-pointer border transition-colors"
+                style={{ background: t.surface, color: t.accent, borderColor: t.accent + "55" }}
+              >
+                ↑ Import Excel
               </button>
-            ))}
+            )}
+            <div ref={periodRef} className="flex gap-1.5" tabIndex={-1}
+              style={periodError ? { outline: `2px solid ${t.danger}`, outlineOffset: 2, borderRadius: 4, padding: 2 } : undefined}>
+              {PERIODS.map(p => (
+                <button key={p} onClick={() => handlePeriodChange(p)} className="px-3 py-1.5 text-xs rounded-sm cursor-pointer border transition-colors"
+                  style={period===p ? { background:t.period[p]+"20", color:t.period[p], borderColor:t.period[p]+"40" } : { background:t.surface, color:t.dim, borderColor:t.border }}>
+                  {p}
+                </button>
+              ))}
+            </div>
           </div>
           {periodError && (
             <span className="text-[10px]" style={{ color: t.danger }}>Please select Baseline, Midline, or Endline</span>
@@ -1401,6 +1419,33 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
           )}
         </div>
       </div>
+
+      {importNotice && (
+        <div
+          role="status"
+          className="flex items-start gap-3 text-xs"
+          style={{
+            color: t.sub, background: t.accentBg, border: `1px solid ${t.accent}45`,
+            borderLeft: `3px solid ${t.accent}`, borderRadius: 5, padding: "10px 12px", lineHeight: 1.55,
+          }}
+        >
+          <span aria-hidden="true" style={{ color: t.accent, fontWeight: 700 }}>✓</span>
+          <div className="min-w-0 flex-1">
+            <strong style={{ color: t.text }}>
+              Imported {importNotice.count} {importNotice.period} learner record{importNotice.count === 1 ? "" : "s"}
+            </strong>{" "}from {importNotice.fileName}. They are in Student Records now.
+            {(importNotice.invalid > 0 || importNotice.duplicates > 0) && (
+              <div style={{ color: t.dim, marginTop: 2 }}>
+                {importNotice.invalid > 0 ? `${importNotice.invalid} invalid row${importNotice.invalid === 1 ? " was" : "s were"} skipped.` : ""}
+                {importNotice.invalid > 0 && importNotice.duplicates > 0 ? " " : ""}
+                {importNotice.duplicates > 0 ? `${importNotice.duplicates} duplicate row${importNotice.duplicates === 1 ? " was" : "s were"} skipped.` : ""}
+              </div>
+            )}
+          </div>
+          <button type="button" aria-label="Dismiss import summary" onClick={() => setImportNotice(null)}
+            className="cursor-pointer" style={{ color: t.dim, background: "transparent", border: "none" }}>✕</button>
+        </div>
+      )}
 
       {/* Two columns on a wide screen: the learner + her measurements on the
           left, the classification and yes/no block on the right, instead of a
@@ -1563,6 +1608,22 @@ function DataEntry({ students, setStudents, school, setView, editingStudent, cle
       </div>
       {formError && (
         <p role="alert" className="text-xs" style={{ color:t.danger, lineHeight:1.55 }}>{formError}</p>
+      )}
+
+      {importOpen && (
+        <ImportLearnersDialog
+          t={t}
+          school={school}
+          sy={activeSy}
+          existing={students.filter((student) => student.schoolId === school.id)}
+          initialPeriod={period}
+          onClose={() => setImportOpen(false)}
+          onImported={(rows, importedPeriod, summary) => {
+            setStudents([...students, ...rows]);
+            setImportOpen(false);
+            setImportNotice({ count: rows.length, period: importedPeriod, ...summary });
+          }}
+        />
       )}
     </div>
   );
