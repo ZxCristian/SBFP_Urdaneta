@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import {
   APP_ENV_REL_PATH,
-  commandSpawnOptions,
+  commandSpawn,
   mergeAppEnv,
   parseAppEnv,
   projectRoot,
@@ -61,15 +61,29 @@ test("an explicit process-env override wins over the file", () => {
   assert.equal(merged.PATH, "/usr/bin");
 });
 
-test("Windows resolves npm's .cmd shims through a shell", () => {
-  // npm puts `vite.cmd` on PATH; CreateProcess cannot run it without a shell,
+test("Windows resolves npm's .cmd shims through cmd.exe, not shell mode", () => {
+  // npm puts `vite.cmd` on PATH; CreateProcess cannot run it without cmd.exe,
   // so a bare `vite` spawn fails with ENOENT on Windows (`npm run dev`).
-  assert.equal(commandSpawnOptions("vite", {}, "win32").shell, true);
-  // An absolute executable must stay shell-free: cmd.exe would split
+  // `shell: true` is avoided because Node warns about its unescaped args.
+  const launch = commandSpawn(
+    "vite",
+    ["dev", "--port", "8080"],
+    { ComSpec: "C:\\Windows\\system32\\cmd.exe" },
+    "win32",
+  );
+  assert.equal(launch.file, "C:\\Windows\\system32\\cmd.exe");
+  assert.deepEqual(launch.args, ["/d", "/s", "/c", '"vite dev --port 8080"']);
+  assert.equal("shell" in launch.options, false);
+  assert.equal(launch.options.windowsVerbatimArguments, true);
+  // An absolute executable stays direct: cmd.exe would split
   // `C:\Program Files\nodejs\node.exe` at the first space.
-  assert.equal(commandSpawnOptions("C:\\Program Files\\nodejs\\node.exe", {}, "win32").shell, false);
-  assert.equal(commandSpawnOptions("vite", {}, "linux").shell, false);
-  assert.equal(commandSpawnOptions("vite", {}, "darwin").shell, false);
+  const direct = commandSpawn("C:\\Program Files\\nodejs\\node.exe", ["-e", "1"], {}, "win32");
+  assert.equal(direct.file, "C:\\Program Files\\nodejs\\node.exe");
+  assert.deepEqual(direct.args, ["-e", "1"]);
+  assert.equal("shell" in direct.options, false);
+  // POSIX is untouched.
+  assert.equal(commandSpawn("vite", ["build"], {}, "linux").file, "vite");
+  assert.equal("shell" in commandSpawn("vite", ["build"], {}, "darwin").options, false);
 });
 
 test("this app carries no VITE_AUTH_ENABLED override", () => {

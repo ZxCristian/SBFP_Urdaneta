@@ -66,20 +66,31 @@ export function mergeAppEnv(appEnv, processEnv) {
 }
 
 /**
- * Options for the wrapped command.
+ * How to launch the wrapped command.
  *
  * npm installs local binaries as `.cmd` shims on Windows, and CreateProcess
  * cannot resolve those through PATHEXT: spawning a bare `vite` fails with
  * `ENOENT` even though `node_modules/.bin` is on PATH — which is why
- * `npm run dev` broke on Windows while `npx vite` worked. A shell performs
- * that lookup. Path-bearing commands (the wrapper also runs `node`, and the
- * tests pass an absolute `node.exe`) must stay shell-free: cmd.exe would split
- * an unquoted path at its spaces. POSIX keeps `shell: false` everywhere, so
+ * `npm run dev` broke on Windows while `npx vite` worked. Route it through
+ * cmd.exe explicitly rather than Node's `shell: true`: shell mode joins the
+ * arguments without escaping and makes Node 22 print a DEP0190 warning on
+ * every dev run. Path-bearing commands (the wrapper also runs `node`, and the
+ * tests pass an absolute `node.exe`) stay direct — cmd.exe would split an
+ * unquoted path at its spaces. POSIX launches the command directly, so
  * arguments and signals go straight to the process.
  */
-export function commandSpawnOptions(command, env, platform = process.platform) {
+export function commandSpawn(command, args, env, platform = process.platform) {
   const bare = !command.includes("/") && !command.includes("\\");
-  return { stdio: "inherit", env, shell: platform === "win32" && bare };
+  if (platform === "win32" && bare) {
+    const comspec = env.ComSpec || env.COMSPEC || "cmd.exe";
+    // The command line Node's own `shell: true` builds on Windows.
+    return {
+      file: comspec,
+      args: ["/d", "/s", "/c", `"${[command, ...args].join(" ")}"`],
+      options: { stdio: "inherit", env, windowsVerbatimArguments: true },
+    };
+  }
+  return { file: command, args, options: { stdio: "inherit", env } };
 }
 
 /**
@@ -128,7 +139,8 @@ function main(argv) {
     process.exit(2);
   }
   const env = mergeAppEnv(readAppEnv(projectRoot()), process.env);
-  const child = spawn(command, args, commandSpawnOptions(command, env));
+  const launch = commandSpawn(command, args, env);
+  const child = spawn(launch.file, launch.args, launch.options);
   // The dev server is long-running and is stopped by signalling this wrapper.
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => child.kill(signal));
