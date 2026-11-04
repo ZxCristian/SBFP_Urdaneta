@@ -1,5 +1,5 @@
 /**
- * The School Portal — `/teacher`.
+ * The School Portal — `/SchoolPortal`.
  *
  * The school's side of the SBFP, deliberately a different product from the
  * district console: one school signs in (one account per school), keeps the
@@ -540,7 +540,7 @@ function TeacherForgotPassword({
 
 /**
  * The other half of the emailed link: choose a new password, proven by the
- * token from the email. Reached at `/teacher?reset=…`; the token is consumed
+ * token from the email. Reached at `/SchoolPortal?reset=…`; the token is consumed
  * as it is read, so a used or expired link is refused.
  */
 function TeacherResetPassword({ token }: { token: string }) {
@@ -577,7 +577,7 @@ function TeacherResetPassword({ token }: { token: string }) {
     }
   };
 
-  const destination = done?.role === "admin" ? "/login" : "/teacher";
+  const destination = done?.role === "admin" ? "/login" : "/SchoolPortal";
   const destinationLabel = done?.role === "admin" ? "Division Console" : "School Portal";
 
   return (
@@ -674,7 +674,7 @@ function TeacherResetPassword({ token }: { token: string }) {
         </Card>
 
         <p style={{ marginTop: 16, fontSize: 12, color: C.dim }}>
-          <a href="/teacher" style={{ color: C.navy, textDecoration: "none" }}>
+          <a href="/SchoolPortal" style={{ color: C.navy, textDecoration: "none" }}>
             ← Back to School Portal sign in
           </a>
         </p>
@@ -921,7 +921,7 @@ function AccountOnHold({ access }: { access: Access }) {
           work will be back.
         </p>
         <div className="mt-5 flex items-center gap-3 flex-wrap">
-          <UserButton redirectTo="/teacher" />
+          <UserButton redirectTo="/SchoolPortal" />
         </div>
       </Card>
     </div>
@@ -952,7 +952,7 @@ function NoAccountNotice({ access }: { access: Access }) {
             <Button small>Division Console →</Button>
           </a>
         )}
-        <UserButton redirectTo="/teacher" />
+        <UserButton redirectTo="/SchoolPortal" />
       </div>
     </Card>
   );
@@ -1296,7 +1296,7 @@ function AccountCard({ profile }: { profile: TeacherProfile }) {
     // Changing the password ends every session for the account on the server
     // (that is what makes a stolen session die with the old password), so this
     // one goes too — back to the sign-in screen with the new password.
-    window.setTimeout(() => void signOut("/teacher"), 1600);
+    window.setTimeout(() => void signOut("/SchoolPortal"), 1600);
   };
 
   return (
@@ -2662,7 +2662,7 @@ export default function TeacherApp({ resetToken }: { resetToken?: string } = {})
       <header className="app-topbar" style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, position: "sticky", top: 0, zIndex: 10 }}>
         <div className="mx-auto px-5" style={{ maxWidth: tab === "summary" ? 1680 : tab === "records" ? 1680 : 1080 }}>
           <div className="flex items-center gap-3 py-3 flex-wrap">
-            <a href="/teacher" className="flex items-center gap-3" style={{ textDecoration: "none" }}>
+            <a href="/SchoolPortal" className="flex items-center gap-3" style={{ textDecoration: "none" }}>
               <img src="/school-health-wheel.svg" alt="" width={36} height={36} />
               <span>
                 <span style={{ display: "block", fontSize: 15, fontWeight: 600, color: C.text }}>SBFP School Portal</span>
@@ -2678,7 +2678,7 @@ export default function TeacherApp({ resetToken }: { resetToken?: string } = {})
                     <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>{profile.teacherName}</div>
                     <div style={{ fontSize: 11, color: C.dim }}>{school.name}</div>
                   </div>
-                  <UserButton redirectTo="/teacher" />
+                  <UserButton redirectTo="/SchoolPortal" />
                 </>
               )}
             </div>

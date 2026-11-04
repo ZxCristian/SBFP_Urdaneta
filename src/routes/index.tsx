@@ -25,6 +25,6 @@ function Home() {
   const access = useAccess();
 
   if (access.status === "admin") return <SbfpApp />;
-  if (access.status === "teacher") return <Navigate to="/teacher" />;
+  if (access.status === "teacher") return <Navigate to="/SchoolPortal" />;
   return <LoginScreen access={access} />;
 }

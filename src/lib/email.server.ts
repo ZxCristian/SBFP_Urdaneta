@@ -46,7 +46,7 @@ function configuredOrigin(value: string | undefined): string | null {
  *
  * The reset token travels in the query string (not a path segment) so each
  * sign-in route can recognise it without a second route just to carry it. The
- * Division Office lands on `/login`; a school account lands on `/teacher` with
+ * Division Office lands on `/login`; a school account lands on `/SchoolPortal` with
  * the same form, in its own theme.
  */
 export function buildResetUrl(token: string, role: "admin" | "teacher"): string {
@@ -65,7 +65,7 @@ export function buildResetUrl(token: string, role: "admin" | "teacher"): string 
     }
   }
   const safe = origin ?? "http://localhost:8080";
-  const path = role === "teacher" ? "/teacher" : "/login";
+  const path = role === "teacher" ? "/SchoolPortal" : "/login";
   return `${safe}${path}?reset=${encodeURIComponent(token)}`;
 }
 

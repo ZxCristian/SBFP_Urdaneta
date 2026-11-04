@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SchoolPortalRouteImport } from './routes/SchoolPortal'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as TeacherRouteImport } from './routes/teacher'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -17,6 +18,11 @@ import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SchoolPortalRoute = SchoolPortalRouteImport.update({
+  id: '/SchoolPortal',
+  path: '/SchoolPortal',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -37,12 +43,14 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/SchoolPortal': typeof SchoolPortalRoute
   '/login': typeof LoginRoute
   '/teacher': typeof TeacherRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/SchoolPortal': typeof SchoolPortalRoute
   '/login': typeof LoginRoute
   '/teacher': typeof TeacherRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -50,20 +58,22 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/SchoolPortal': typeof SchoolPortalRoute
   '/login': typeof LoginRoute
   '/teacher': typeof TeacherRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/teacher' | '/api/auth/$'
+  fullPaths: '/' | '/SchoolPortal' | '/login' | '/teacher' | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/teacher' | '/api/auth/$'
-  id: '__root__' | '/' | '/login' | '/teacher' | '/api/auth/$'
+  to: '/' | '/SchoolPortal' | '/login' | '/teacher' | '/api/auth/$'
+  id: '__root__' | '/' | '/SchoolPortal' | '/login' | '/teacher' | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  SchoolPortalRoute: typeof SchoolPortalRoute
   LoginRoute: typeof LoginRoute
   TeacherRoute: typeof TeacherRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
@@ -76,6 +86,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/SchoolPortal': {
+      id: '/SchoolPortal'
+      path: '/SchoolPortal'
+      fullPath: '/SchoolPortal'
+      preLoaderRoute: typeof SchoolPortalRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -104,6 +121,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  SchoolPortalRoute: SchoolPortalRoute,
   LoginRoute: LoginRoute,
   TeacherRoute: TeacherRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,

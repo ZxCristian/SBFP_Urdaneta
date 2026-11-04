@@ -1,6 +1,6 @@
 /**
  * The SBFP domain layer, shared by the district console (`/`) and the School
- * Portal (`/teacher`).
+ * Portal (`/SchoolPortal`).
  *
  * Both sites work on the same things — the 58 Urdaneta City schools, the SBFP
  * form header, learner records with WHO 2007 BMI/HFA classification, and the

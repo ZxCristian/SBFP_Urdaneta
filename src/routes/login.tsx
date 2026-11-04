@@ -313,7 +313,7 @@ export function LoginScreen({
           <AdminPanel access={access} resetToken={resetToken} onResetDone={onResetDone} />
           <p style={{ fontSize: 12, color: T.dim, lineHeight: 1.6 }}>
             A school's personnel signs in on the{" "}
-            <Link to="/teacher" style={{ color: T.accent, textDecoration: "none" }}>
+            <Link to="/SchoolPortal" style={{ color: T.accent, textDecoration: "none" }}>
               School Portal
             </Link>{" "}
             with the account the Division Office issued.
@@ -378,7 +378,7 @@ function AdminPanel({
           school, or sign in below with the Division Office credentials.
         </p>
         <div className="mt-5">
-          <Link to="/teacher" style={{ textDecoration: "none" }}>
+          <Link to="/SchoolPortal" style={{ textDecoration: "none" }}>
             <Submit type="button">Open the School Portal →</Submit>
           </Link>
         </div>
