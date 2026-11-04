@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import {
   APP_ENV_REL_PATH,
+  commandSpawnOptions,
   mergeAppEnv,
   parseAppEnv,
   projectRoot,
@@ -58,6 +59,17 @@ test("an explicit process-env override wins over the file", () => {
   );
   assert.equal(merged.VITE_AUTH_ENABLED, "true");
   assert.equal(merged.PATH, "/usr/bin");
+});
+
+test("Windows resolves npm's .cmd shims through a shell", () => {
+  // npm puts `vite.cmd` on PATH; CreateProcess cannot run it without a shell,
+  // so a bare `vite` spawn fails with ENOENT on Windows (`npm run dev`).
+  assert.equal(commandSpawnOptions("vite", {}, "win32").shell, true);
+  // An absolute executable must stay shell-free: cmd.exe would split
+  // `C:\Program Files\nodejs\node.exe` at the first space.
+  assert.equal(commandSpawnOptions("C:\\Program Files\\nodejs\\node.exe", {}, "win32").shell, false);
+  assert.equal(commandSpawnOptions("vite", {}, "linux").shell, false);
+  assert.equal(commandSpawnOptions("vite", {}, "darwin").shell, false);
 });
 
 test("this app carries no VITE_AUTH_ENABLED override", () => {
