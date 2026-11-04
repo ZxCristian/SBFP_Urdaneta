@@ -96,35 +96,92 @@ const explicitBaseURL = env("BETTER_AUTH_URL");
 // Explicit `string[]` (not a readonly tuple) — Better Auth's DynamicBaseURLConfig
 // requires a mutable `allowedHosts: string[]`.
 const previewAllowedHosts: string[] = [...PREVIEW_ALLOWED_HOSTS];
-// Local `npm run dev` (port 8080 contract). Browsers may send Origin as any of
-// these for the same server — trusting only `localhost` rejects `127.0.0.1` and
-// breaks email/password with "Invalid origin".
-const LOCAL_DEV_ORIGINS: string[] = [
-  "http://localhost:8080",
-  "http://127.0.0.1:8080",
-  "http://[::1]:8080",
+// Loopback, on ANY port. `npm run dev` serves 8080 and `npm run preview` serves
+// 8081, but a direct `vite` invocation picks its own port — and a port-pinned
+// list is exactly what turned a same-origin sign-in into FORBIDDEN "Invalid
+// origin". A `*` here only spans the port (wildcards never cross a `/`), so
+// these cannot match another site.
+const LOCAL_LOOPBACK_ORIGINS: string[] = [
+  "http://localhost",
+  "https://localhost",
+  "http://localhost:*",
+  "https://localhost:*",
+  "http://127.0.0.1",
+  "https://127.0.0.1",
+  "http://127.0.0.1:*",
+  "https://127.0.0.1:*",
+  "http://[::1]",
+  "https://[::1]",
+  "http://[::1]:*",
+  "https://[::1]:*",
 ];
 const baseURL = explicitBaseURL ?? {
   // Include loopback hosts so dynamic baseURL resolves for local email/password
   // (not only the preview wildcard).
-  allowedHosts: [...previewAllowedHosts, "localhost", "127.0.0.1", "[::1]"],
+  allowedHosts: [...previewAllowedHosts, "localhost", "127.0.0.1", "[::1]", "0.0.0.0"],
   // `auto` → trust both http:// and https:// expansions of allowedHosts
   // (preview is https; local dev is http).
   protocol: "auto" as const,
   fallback: "http://localhost:8080",
 };
 
-// Origins Better Auth accepts on credentialed POSTs (sign-up/sign-in, etc.).
-// Missing entries here surface as FORBIDDEN "Invalid origin".
-const trustedOrigins: string[] = explicitBaseURL
-  ? [explicitBaseURL, ...LOCAL_DEV_ORIGINS]
+/** The static trusted origins, before the per-request same-origin check. */
+const configuredTrustedOrigins: string[] = explicitBaseURL
+  ? [explicitBaseURL, ...LOCAL_LOOPBACK_ORIGINS]
   : [
       // Host wildcards (matched against Origin's host)
       ...previewAllowedHosts,
       // Full-origin wildcards (matched against Origin)
       ...previewAllowedHosts.flatMap((host) => [`https://${host}`, `http://${host}`]),
-      ...LOCAL_DEV_ORIGINS,
+      ...LOCAL_LOOPBACK_ORIGINS,
     ];
+
+/**
+ * The host the browser actually asked for, honouring a proxy's
+ * `x-forwarded-host` first (a comma list keeps the first entry).
+ */
+function requestHost(request?: Request): string | null {
+  if (!request) return null;
+  const forwarded = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  if (forwarded) return forwarded.toLowerCase();
+  const host = request.headers.get("host")?.trim();
+  if (host) return host.toLowerCase();
+  try {
+    return new URL(request.url).host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Origins Better Auth accepts on credentialed POSTs (sign-in, reset, …).
+ *
+ * Besides the configured/preview list, an `Origin` (or `Referer`) that names
+ * the SAME host this request was addressed to is trusted: that is precisely
+ * what a browser sends for a same-origin form post, and a cross-site page
+ * cannot forge either header. Without it, every address missing from the
+ * static list — a LAN address (`http://192.168.…`), `localhost` on another
+ * port, a Vercel preview URL, a custom domain — was refused with FORBIDDEN
+ * "Invalid origin" before the password was ever compared.
+ */
+function trustedOriginsFor(request?: Request): string[] {
+  const origins = [...configuredTrustedOrigins];
+  const host = requestHost(request);
+  const originHeader = request?.headers.get("origin") ?? request?.headers.get("referer");
+  if (!host || !originHeader) return origins;
+  try {
+    const origin = new URL(originHeader);
+    if (
+      (origin.protocol === "http:" || origin.protocol === "https:") &&
+      origin.host.toLowerCase() === host
+    ) {
+      origins.push(origin.origin);
+    }
+  } catch {
+    /* a malformed Origin is left for Better Auth to reject */
+  }
+  return origins;
+}
 
 // `SUPABASE_DB_URL` wins over the platform's provisioned `DATABASE_URL`.
 const databaseUrl = databaseUrlFromEnv(process.env);
@@ -183,9 +240,10 @@ export const auth = betterAuth({
   database,
 
   // CSRF / origin check for credentialed auth POSTs (email sign-up/sign-in, …).
-  // See `trustedOrigins` construction above — must cover live preview hosts AND
-  // local loopback variants, or clients get "Invalid origin".
-  trustedOrigins,
+  // A function, so the request's own host can be accepted in addition to the
+  // static deployment/preview/loopback origins above — otherwise clients get
+  // "Invalid origin" (see `trustedOriginsFor`).
+  trustedOrigins: trustedOriginsFor,
 
   // Encrypt broker-issued OAuth tokens at rest, and treat the broker's upstreams
   // as trusted first-party identities. The broker owns identity and X emails are
