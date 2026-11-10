@@ -1,7 +1,7 @@
 import { useState, useMemo, createContext, useContext, useEffect, useRef, Fragment, type CSSProperties } from "react";
 // Type-only: erased at build time, so ExcelJS stays out of the initial bundle.
 import type { SummaryMatrixRow } from "@/lib/sbfp-domain";
-// What the schools sent up through the teacher website (`/SchoolPortal`).
+// What the schools sent up through the School Portal (`/`).
 import {
   addRecord,
   removeRecord,
@@ -302,7 +302,7 @@ function Sidebar({ view, setView, selectedSchool, setSelectedSchool, themeMode, 
           <span className="text-[9px] tracking-widest uppercase" style={{ color:t.dim }}>Signed in</span>
           <UserButton />
         </div>
-        <a href="/SchoolPortal" title="The website each school's personnel signs in to"
+        <a href="/" title="The website each school's personnel signs in to"
           className="w-full flex items-center gap-2 px-3 py-2 rounded-sm text-xs transition-all"
           style={{ border:`1px solid ${t.border}`, background:t.surface2, color:t.sub, textDecoration:"none" }}>
           <span>⇱</span>
@@ -2221,7 +2221,7 @@ export default function App() {
   const teacherData = access.store;
 
   // The school list is the database's, and a teacher's profile IS her school's
-  // SBFP form header — so what she saves on `/SchoolPortal` is folded in here rather
+  // SBFP form header — so what she saves on `/` is folded in here rather
   // than duplicated in local state.
   const schools = useMemo<School[]>(() => {
     const profiles = teacherData.profiles;
@@ -2264,7 +2264,7 @@ export default function App() {
   /**
    * School-list writes, all through the database: a rename or a new school is a
    * `sbfp_schools` row, and the form header is the school's profile (the same
-   * block the teacher saves on `/SchoolPortal`), so neither side can silently undo
+   * block the teacher saves on `/`), so neither side can silently undo
    * the other. The list itself is re-read afterwards rather than patched in
    * place, so what is on screen is what the server holds.
    */
@@ -2317,7 +2317,7 @@ export default function App() {
     })();
   };
 
-  /** The district's own rows plus everything the schools encoded on `/SchoolPortal`. */
+  /** The district's own rows plus everything the schools encoded on `/`. */
   const allStudents = useMemo(() => {
     const seen = new Set(students.map(s => s.id));
     return [...students, ...teacherRecords.filter(r => !seen.has(r.id))];
