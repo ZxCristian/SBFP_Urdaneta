@@ -2434,15 +2434,6 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
   /** The same matrix the screen shows and the .xlsx prints. */
   const summaryRows = summaryMatrix();
 
-  /** The school year most of these records use — what the printed form carries. */
-  const syForExport = () => {
-    const tally = new Map<string, number>();
-    for (const s of shown) if (s.sy) tally.set(s.sy, (tally.get(s.sy) ?? 0) + 1);
-    let best = store.activeSy, n = 0;
-    for (const [sy, c] of tally) if (c > n) { best = sy; n = c; }
-    return best;
-  };
-
   const exportForm2 = async () => {
     setExporting(true);
     setExportError("");
@@ -2452,7 +2443,7 @@ function SummaryTable({ school, onEntry }: { school: School; onEntry: () => void
         school,
         period,
         cohort,
-        sy: syForExport(),
+        sy: store.activeSy,
         bmiStatuses: BMI_STATUSES,
         hfaStatuses: HFA_STATUSES,
         rows: summaryRows,

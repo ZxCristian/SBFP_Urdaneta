@@ -1976,15 +1976,6 @@ function SummaryTable({ students, school, activeSy }: { students:Student[]; scho
   };
   const summaryRows = summaryMatrix();
 
-  /** School year printed on the Form 2 export — the one most of these records use. */
-  const syForExport = () => {
-    const tally = new Map<string, number>();
-    for (const s of f) if (s.sy) tally.set(s.sy, (tally.get(s.sy) ?? 0) + 1);
-    let best = activeSy, n = 0;
-    for (const [sy, c] of tally) if (c > n) { best = sy; n = c; }
-    return best;
-  };
-
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-start justify-between flex-wrap gap-3">
@@ -2023,7 +2014,7 @@ function SummaryTable({ students, school, activeSy }: { students:Student[]; scho
                 try {
                   const { exportSummaryToExcel } = await import("@/lib/sbfp-export");
                   await exportSummaryToExcel({
-                    school, period, cohort, sy: syForExport(),
+                    school, period, cohort, sy: activeSy,
                     bmiStatuses: BMI_STATUSES,
                     hfaStatuses: HFA_STATUSES,
                     rows: summaryRows,
