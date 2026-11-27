@@ -15,6 +15,7 @@ import { Route as SchoolPortalRouteImport } from './routes/SchoolPortal'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as TeacherRouteImport } from './routes/teacher'
 import { Route as ApiKeepAliveRouteImport } from './routes/api/keep-alive'
+import { Route as ApiKeepAliveDailyRouteImport } from './routes/api/keep-alive-daily'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const IndexRoute = IndexRouteImport.update({
@@ -47,6 +48,11 @@ const ApiKeepAliveRoute = ApiKeepAliveRouteImport.update({
   path: '/api/keep-alive',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiKeepAliveDailyRoute = ApiKeepAliveDailyRouteImport.update({
+  id: '/api/keep-alive-daily',
+  path: '/api/keep-alive-daily',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -60,6 +66,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/teacher': typeof TeacherRoute
   '/api/keep-alive': typeof ApiKeepAliveRoute
+  '/api/keep-alive-daily': typeof ApiKeepAliveDailyRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
@@ -69,6 +76,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/teacher': typeof TeacherRoute
   '/api/keep-alive': typeof ApiKeepAliveRoute
+  '/api/keep-alive-daily': typeof ApiKeepAliveDailyRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
@@ -79,6 +87,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/teacher': typeof TeacherRoute
   '/api/keep-alive': typeof ApiKeepAliveRoute
+  '/api/keep-alive-daily': typeof ApiKeepAliveDailyRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
@@ -90,6 +99,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/teacher'
     | '/api/keep-alive'
+    | '/api/keep-alive-daily'
     | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -99,6 +109,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/teacher'
     | '/api/keep-alive'
+    | '/api/keep-alive-daily'
     | '/api/auth/$'
   id:
     | '__root__'
@@ -108,6 +119,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/teacher'
     | '/api/keep-alive'
+    | '/api/keep-alive-daily'
     | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
@@ -118,6 +130,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   TeacherRoute: typeof TeacherRoute
   ApiKeepAliveRoute: typeof ApiKeepAliveRoute
+  ApiKeepAliveDailyRoute: typeof ApiKeepAliveDailyRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
@@ -165,6 +178,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiKeepAliveRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/keep-alive-daily': {
+      id: '/api/keep-alive-daily'
+      path: '/api/keep-alive-daily'
+      fullPath: '/api/keep-alive-daily'
+      preLoaderRoute: typeof ApiKeepAliveDailyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
@@ -182,6 +202,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   TeacherRoute: TeacherRoute,
   ApiKeepAliveRoute: ApiKeepAliveRoute,
+  ApiKeepAliveDailyRoute: ApiKeepAliveDailyRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport
