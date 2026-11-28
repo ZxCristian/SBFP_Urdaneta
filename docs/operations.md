@@ -5,17 +5,15 @@ These are the production steps that are not obvious from the code.
 
 ## Deploys
 
-The Vercel project must be connected to this GitHub repository with **Production
-Branch = `main`**. With that connection, every merge deploys automatically and
-the commit gets a Vercel deployment status.
+**Production is deployed manually, on purpose.** The Vercel project is not
+connected to GitHub auto-deploy: merging to `main` updates the repository and
+runs CI, and the release is then published from Vercel (`vercel --prod` or
+Dashboard → Deployments → Redeploy).
 
-If a push does not appear on the live site, check Project → Settings → Git in
-Vercel first, then redeploy from the dashboard. Merging without that connection
-changes the repository but not the site.
-
-CI (`.github/workflows/ci.yml`) runs typecheck, the auth invariant, tests and the
-production build on every push and pull request. A red CI run blocks nothing at
-Vercel unless branch protection is enabled; enable it for `main`.
+That means a push alone does not change the live site. Deploy only after CI
+(`.github/workflows/ci.yml`) is green on the commit you intend to release, and
+verify `/robots.txt` plus a signed-in page afterwards to confirm the new build
+is the one serving traffic.
 
 ## Database migrations
 

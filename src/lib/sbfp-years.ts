@@ -37,10 +37,28 @@ export interface SchoolYearSummary {
 }
 
 /** A past year, read-only: its learner rows, feedback and form headers. */
+export interface ArchivedSchoolStats {
+  schoolId: string;
+  records: number;
+  learners: number;
+  feedback: number;
+}
+
 export interface ArchivedSchoolYear {
   sy: string;
+  /**
+   * Learner rows for the one school that was requested, or an empty list for
+   * the district overview. A whole year is far too large to serialize in one
+   * response (the production year is tens of thousands of rows), so the
+   * School Years page reads one school's rows at a time and uses `schoolStats`
+   * for the overview table.
+   */
   records: Student[];
   feedbacks: SchoolFeedback[];
+  /** District totals, counted in SQL rather than from `records`. */
+  stats: { learners: number; records: number; schools: number; feedback: number };
+  /** One row per school with learner records or feedback in this year. */
+  schoolStats: ArchivedSchoolStats[];
   /** The archived school information block, keyed by school id. */
   profiles: Record<string, SchoolFormDetails>;
   /** Form 2's hand-entered at-risk / IP counts for this year. */

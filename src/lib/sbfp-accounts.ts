@@ -45,7 +45,7 @@ import type {
   TrashedRecord,
 } from "@/lib/sbfp-shared";
 import { listSchools } from "./sbfp-schools.ts";
-import { divisionSummary, schoolRecordStats } from "./sbfp-stats.ts";
+import { archivedSchoolStats, divisionSummary, schoolRecordStats } from "./sbfp-stats.ts";
 import { currentSchoolYear, getActiveSchoolYear, SchoolYearError } from "./sbfp-years.ts";
 import type { ArchivedSchoolYear } from "./sbfp-years.ts";
 import { learnerProblem } from "./sbfp-validation.ts";
@@ -1810,7 +1810,11 @@ function toArchivedForm(row: ArchivedProfileDbRow): SchoolFormDetails {
  * feedback, Form 2 manual counts and the school information block as it stood
  * when the year closed. The School Years page uses this; writes never do.
  */
-export async function getArchivedYear(sql: Sql, sy: string): Promise<ArchivedSchoolYear> {
+export async function getArchivedYear(
+  sql: Sql,
+  sy: string,
+  schoolId?: string,
+): Promise<ArchivedSchoolYear> {
   const years = await sql<{ sy: string; closed_at: string | Date | null }>`
     select sy, closed_at from sbfp_school_years where sy = ${sy}
   `;
@@ -1819,12 +1823,17 @@ export async function getArchivedYear(sql: Sql, sy: string): Promise<ArchivedSch
   }
   const active = !years[0].closed_at;
 
-  const [records, feedbacks, profiles, live, summaryExtras] = await Promise.all([
-    sql.query<RecordDbRow>(
-      `select ${RECORD_COLUMNS} from sbfp_records
-       where deleted_at is null and sy = $1 order by created_at desc`,
-      [sy],
-    ),
+  const [statsRows, records, feedbacks, profiles, live, summaryExtras] = await Promise.all([
+    archivedSchoolStats(sql, sy),
+    // A district year is far larger than one server-function response. The
+    // overview sends no rows; the page asks for one school at a time.
+    schoolId
+      ? sql.query<RecordDbRow>(
+          `select ${RECORD_COLUMNS} from sbfp_records
+           where deleted_at is null and sy = $1 and school_id = $2 order by created_at desc`,
+          [sy, schoolId],
+        )
+      : Promise.resolve([] as RecordDbRow[]),
     sql.query<FeedbackDbRow>(
       `select id, school_id, author, role, category, rating, message, created_at, status, response, origin
        from sbfp_feedback where sy = $1 order by created_at desc`,
@@ -1856,7 +1865,28 @@ export async function getArchivedYear(sql: Sql, sy: string): Promise<ArchivedSch
     sy,
     records: records.map(toStudent),
     feedbacks: feedbacks.map(toFeedback),
+    stats: {
+      learners: statsRows.reduce((sum, row) => sum + row.learners, 0),
+      records: statsRows.reduce((sum, row) => sum + row.records, 0),
+      schools: statsRows.length,
+      feedback: statsRows.reduce((sum, row) => sum + row.feedback, 0),
+    },
+    schoolStats: statsRows,
     profiles: profileMap,
     summaryExtras: summaryExtras.map(toSummaryExtra),
   };
+}
+
+/** One school's learner rows from an archived (or the active) school year. */
+export async function getArchivedSchoolRecords(
+  sql: Sql,
+  sy: string,
+  schoolId: string,
+): Promise<Student[]> {
+  const rows = await sql.query<RecordDbRow>(
+    `select ${RECORD_COLUMNS} from sbfp_records
+     where deleted_at is null and sy = $1 and school_id = $2 order by created_at desc`,
+    [sy, schoolId],
+  );
+  return rows.map(toStudent);
 }
