@@ -14,6 +14,7 @@
     "build": "node scripts/with-app-env.mjs vite build && node scripts/after-build-copy.mjs",
     "build:deploy": "npm run build",
     "db:migrate": "node scripts/migrate.mjs",
+    "db:clear-sample": "node scripts/clear-sample-data.mjs",
     "seed": "npm run db:migrate && node --experimental-strip-types scripts/seed-sample-data.mjs",
     "build:dev": "node scripts/with-app-env.mjs vite build --mode development",
     "preview": "node scripts/with-app-env.mjs vite preview",

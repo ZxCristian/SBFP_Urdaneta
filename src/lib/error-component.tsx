@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import type { ErrorComponentProps } from "@tanstack/react-router";
 import { TriangleAlert } from "lucide-react";
+import { reportClientError } from "@/lib/report-client-error";
 
 const FALLBACK_MESSAGE = "An unexpected error occurred. Try reloading the page.";
 
@@ -10,6 +12,12 @@ function errorMessage(error: unknown): string {
 }
 
 export function AppErrorComponent({ error }: ErrorComponentProps) {
+  // One report per crash, not one per render. The server route logs it with the
+  // rest of the app's failures and forwards it to the optional webhook.
+  useEffect(() => {
+    reportClientError(error);
+  }, [error]);
+
   return (
     <main
       className={

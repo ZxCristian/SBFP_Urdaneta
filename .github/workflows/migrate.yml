@@ -1,0 +1,49 @@
+name: Migrate database
+
+# Deploys do not touch the schema; this job applies `migrations/*.sql` to the
+# production Postgres after a migration merges. It uses the same TLS settings
+# as the app (`scripts/pg-connection.mjs`, including Supabase's bundled roots),
+# so no certificate has to be pasted into the repository.
+#
+# Add the connection string once as a repository secret named SUPABASE_DB_URL
+# (Settings → Secrets and variables → Actions). Without it the job reports a
+# notice and succeeds, so forks and fresh clones are not blocked.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "migrations/**"
+      - "scripts/migrate.mjs"
+      - "scripts/pg-connection.mjs"
+      - "scripts/migration-plan.mjs"
+  workflow_dispatch:
+
+concurrency:
+  group: migrate-database
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply pending migrations
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::notice::SUPABASE_DB_URL is not configured; skipping migrations."
+            exit 0
+          fi
+          npm run db:migrate

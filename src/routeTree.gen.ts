@@ -14,6 +14,7 @@ import { Route as AdminRouteImport } from './routes/Admin'
 import { Route as SchoolPortalRouteImport } from './routes/SchoolPortal'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as TeacherRouteImport } from './routes/teacher'
+import { Route as ApiClientErrorRouteImport } from './routes/api/client-error'
 import { Route as ApiKeepAliveRouteImport } from './routes/api/keep-alive'
 import { Route as ApiKeepAliveDailyRouteImport } from './routes/api/keep-alive-daily'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -43,6 +44,11 @@ const TeacherRoute = TeacherRouteImport.update({
   path: '/teacher',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiClientErrorRoute = ApiClientErrorRouteImport.update({
+  id: '/api/client-error',
+  path: '/api/client-error',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiKeepAliveRoute = ApiKeepAliveRouteImport.update({
   id: '/api/keep-alive',
   path: '/api/keep-alive',
@@ -65,6 +71,7 @@ export interface FileRoutesByFullPath {
   '/SchoolPortal': typeof SchoolPortalRoute
   '/login': typeof LoginRoute
   '/teacher': typeof TeacherRoute
+  '/api/client-error': typeof ApiClientErrorRoute
   '/api/keep-alive': typeof ApiKeepAliveRoute
   '/api/keep-alive-daily': typeof ApiKeepAliveDailyRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -75,6 +82,7 @@ export interface FileRoutesByTo {
   '/SchoolPortal': typeof SchoolPortalRoute
   '/login': typeof LoginRoute
   '/teacher': typeof TeacherRoute
+  '/api/client-error': typeof ApiClientErrorRoute
   '/api/keep-alive': typeof ApiKeepAliveRoute
   '/api/keep-alive-daily': typeof ApiKeepAliveDailyRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -86,6 +94,7 @@ export interface FileRoutesById {
   '/SchoolPortal': typeof SchoolPortalRoute
   '/login': typeof LoginRoute
   '/teacher': typeof TeacherRoute
+  '/api/client-error': typeof ApiClientErrorRoute
   '/api/keep-alive': typeof ApiKeepAliveRoute
   '/api/keep-alive-daily': typeof ApiKeepAliveDailyRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -98,6 +107,7 @@ export interface FileRouteTypes {
     | '/SchoolPortal'
     | '/login'
     | '/teacher'
+    | '/api/client-error'
     | '/api/keep-alive'
     | '/api/keep-alive-daily'
     | '/api/auth/$'
@@ -108,6 +118,7 @@ export interface FileRouteTypes {
     | '/SchoolPortal'
     | '/login'
     | '/teacher'
+    | '/api/client-error'
     | '/api/keep-alive'
     | '/api/keep-alive-daily'
     | '/api/auth/$'
@@ -118,6 +129,7 @@ export interface FileRouteTypes {
     | '/SchoolPortal'
     | '/login'
     | '/teacher'
+    | '/api/client-error'
     | '/api/keep-alive'
     | '/api/keep-alive-daily'
     | '/api/auth/$'
@@ -129,6 +141,7 @@ export interface RootRouteChildren {
   SchoolPortalRoute: typeof SchoolPortalRoute
   LoginRoute: typeof LoginRoute
   TeacherRoute: typeof TeacherRoute
+  ApiClientErrorRoute: typeof ApiClientErrorRoute
   ApiKeepAliveRoute: typeof ApiKeepAliveRoute
   ApiKeepAliveDailyRoute: typeof ApiKeepAliveDailyRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
@@ -171,6 +184,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TeacherRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/client-error': {
+      id: '/api/client-error'
+      path: '/api/client-error'
+      fullPath: '/api/client-error'
+      preLoaderRoute: typeof ApiClientErrorRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/keep-alive': {
       id: '/api/keep-alive'
       path: '/api/keep-alive'
@@ -201,6 +221,7 @@ const rootRouteChildren: RootRouteChildren = {
   SchoolPortalRoute: SchoolPortalRoute,
   LoginRoute: LoginRoute,
   TeacherRoute: TeacherRoute,
+  ApiClientErrorRoute: ApiClientErrorRoute,
   ApiKeepAliveRoute: ApiKeepAliveRoute,
   ApiKeepAliveDailyRoute: ApiKeepAliveDailyRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,

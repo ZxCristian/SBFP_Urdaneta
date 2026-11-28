@@ -42,7 +42,8 @@ async function handleKeepAlive(request: Request) {
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
   } catch (err) {
-    console.error('[keep-alive] db touch failed:', err);
+    const { reportServerError } = await import('@/lib/report-error.server');
+    reportServerError('keep-alive', err);
     return new Response(JSON.stringify({
       ok: false,
       error:

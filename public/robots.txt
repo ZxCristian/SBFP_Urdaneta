@@ -1,0 +1,5 @@
+# SBFP Urdaneta City — Division Office console and School Portal.
+# The pages behind sign-in hold learner names, birth dates and measurements.
+# Search engines have no reason to index any of it.
+User-agent: *
+Disallow: /

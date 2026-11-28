@@ -534,7 +534,8 @@ describe("a teacher can only reach her own school", () => {
   });
 
   it("keeps deletes inside the school and moves them to the trash", async () => {
-    await deleteRecord(sql, "tr_b1", SCHOOL_A); // someone else's row → no-op
+    // Someone else's row: nothing is updated, and the caller is told so.
+    assert.equal(await deleteRecord(sql, "tr_b1", SCHOOL_A), false);
     const still = await sql.query<{ id: string; deleted_at: string | null }>(
       "select id, deleted_at from sbfp_records where id = $1",
       ["tr_b1"],
@@ -542,7 +543,7 @@ describe("a teacher can only reach her own school", () => {
     assert.equal(still.length, 1);
     assert.equal(still[0].deleted_at, null, "another school's delete changes nothing");
 
-    await deleteRecord(sql, "tr_a1", SCHOOL_A, TEACHER_A);
+    assert.equal(await deleteRecord(sql, "tr_a1", SCHOOL_A, TEACHER_A), true);
     const trashed = await sql.query<{ id: string; deleted_by: string | null; deleted_at: string | null }>(
       "select id, deleted_by, deleted_at from sbfp_records where id = $1",
       ["tr_a1"],
@@ -551,7 +552,8 @@ describe("a teacher can only reach her own school", () => {
     assert.ok(trashed[0].deleted_at);
     assert.equal(trashed[0].deleted_by, TEACHER_A);
 
-    await restoreRecord(sql, "tr_a1", SCHOOL_A);
+    assert.equal(await restoreRecord(sql, "tr_b1", SCHOOL_A), false);
+    assert.equal(await restoreRecord(sql, "tr_a1", SCHOOL_A), true);
     const restored = await sql.query<{ deleted_at: string | null }>(
       "select deleted_at from sbfp_records where id = $1",
       ["tr_a1"],

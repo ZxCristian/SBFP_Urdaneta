@@ -62,6 +62,11 @@ async function settle<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
     ) {
       return { ok: false, code: err.code, message: err.message };
     }
+    // Anything that is not a deliberate, typed refusal is a bug: log it with
+    // structure (and the optional webhook) before the framework turns it into a
+    // generic 500 for the caller.
+    const { reportServerError } = await import("@/lib/report-error.server");
+    reportServerError("sbfp-api", err);
     throw err;
   }
 }
@@ -117,14 +122,14 @@ async function requireAccess(email: string | null) {
 }
 
 /** The same, for the operations only the Division Office may perform. */
-async function requireAdmin(email: string | null) {
+async function requireAdmin(
+  email: string | null,
+  message = "Only the Division Office account can issue or change accounts.",
+) {
   const { sql, access } = await requireAccess(email);
   const { AccountError } = await import("./sbfp-accounts");
   if (access.account.role !== "admin") {
-    throw new AccountError(
-      "forbidden",
-      "Only the Division Office account can issue or change accounts.",
-    );
+    throw new AccountError("forbidden", message);
   }
   return { sql, access };
 }
@@ -283,7 +288,10 @@ export const fetchSchoolYearArchive = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context, data }) =>
     settle(async () => {
-      const { sql } = await requireAdmin(await sessionEmail(context));
+      const { sql } = await requireAdmin(
+        await sessionEmail(context),
+        "Only the Division Office account can open archived school years.",
+      );
       const { getArchivedYear } = await import("./sbfp-accounts");
       return { archive: await getArchivedYear(sql, data.sy) };
     }),
@@ -309,6 +317,22 @@ export const startSchoolYear = createServerFn({ method: "POST" })
  * the source is a published password, and this account can read every school's
  * learner records.
  */
+/**
+ * Is this request carrying a valid session? (Read-only, no account lookup.)
+ *
+ * `/Admin` uses it in its SSR loader so a signed-in administrator sees a short
+ * "opening the console" shell in the first HTML response instead of the public
+ * sign-in form, which used to flash until the client store resolved. Signed-out
+ * visitors still get the form in the first paint.
+ */
+export const fetchSessionPresence = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const { getSessionUser } = await import("@/lib/auth/verify.server");
+    const user = await getSessionUser();
+    return { signedIn: Boolean(user) };
+  },
+);
+
 export const fetchBootstrapState = createServerFn({ method: "GET" }).handler(
   async () => {
     const { dbSource, getSql } = await import("@/lib/db");
@@ -814,12 +838,18 @@ export const removeLearnerRecord = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const { sql, access } = await requireAccess(await sessionEmail(context));
     const { deleteRecord, AccountError } = await import("./sbfp-accounts");
+    let removed: boolean;
     if (access.scope === "all") {
-      await deleteRecord(sql, data.id, undefined, access.email);
+      removed = await deleteRecord(sql, data.id, undefined, access.email);
     } else {
       const schoolId = access.scope[0];
       if (!schoolId) throw new AccountError("forbidden", "No school is set for this account.");
-      await deleteRecord(sql, data.id, schoolId, access.email);
+      removed = await deleteRecord(sql, data.id, schoolId, access.email);
+    }
+    // Same answer for "already gone" and "not this school's row" so a teacher
+    // cannot probe another school's ids, but never a success that did nothing.
+    if (!removed) {
+      throw new AccountError("not_found", "That learner record was not found.");
     }
     return { ok: true as const };
   });
@@ -831,12 +861,16 @@ export const restoreLearnerRecord = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const { sql, access } = await requireAccess(await sessionEmail(context));
     const { restoreRecord, AccountError } = await import("./sbfp-accounts");
+    let restored: boolean;
     if (access.scope === "all") {
-      await restoreRecord(sql, data.id);
+      restored = await restoreRecord(sql, data.id);
     } else {
       const schoolId = access.scope[0];
       if (!schoolId) throw new AccountError("forbidden", "No school is set for this account.");
-      await restoreRecord(sql, data.id, schoolId);
+      restored = await restoreRecord(sql, data.id, schoolId);
+    }
+    if (!restored) {
+      throw new AccountError("not_found", "That learner record was not found in the trash.");
     }
     return { ok: true as const };
   });

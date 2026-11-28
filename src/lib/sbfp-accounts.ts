@@ -1370,27 +1370,32 @@ export async function previousBeneficiaryYear(
  * Move one learner record to the trash. It stops appearing in the school's
  * lists but is kept (with every measurement) until the next school year starts,
  * when `startNewSchoolYear` empties the trash permanently. Refuses to cross
- * schools: an id belonging to another school updates nothing.
+ * schools: an id belonging to another school updates nothing and returns false,
+ * so the API can answer "not found" instead of a false success.
  */
 export async function deleteRecord(
   sql: Sql,
   id: string,
   schoolId?: string,
   deletedBy?: string,
-): Promise<void> {
-  if (schoolId === undefined) {
-    await sql`
-      update sbfp_records
-      set deleted_at = now(), deleted_by = ${deletedBy ?? null}, updated_at = now()
-      where id = ${id} and deleted_at is null
-    `;
-    return;
-  }
-  await sql`
-    update sbfp_records
-    set deleted_at = now(), deleted_by = ${deletedBy ?? null}, updated_at = now()
-    where id = ${id} and school_id = ${schoolId} and deleted_at is null
-  `;
+): Promise<boolean> {
+  const rows = schoolId === undefined
+    ? await sql<{ id: string }>`
+        update sbfp_records
+        set deleted_at = now(), deleted_by = ${deletedBy ?? null}, updated_at = now()
+        where id = ${id} and deleted_at is null
+        returning id
+      `
+    : await sql<{ id: string }>`
+        update sbfp_records
+        set deleted_at = now(), deleted_by = ${deletedBy ?? null}, updated_at = now()
+        where id = ${id} and school_id = ${schoolId} and deleted_at is null
+        returning id
+      `;
+  // The caller reports a failed delete instead of a false success: a teacher
+  // passing another school's id (or an id that is already gone) must not be told
+  // the record was removed.
+  return rows.length > 0;
 }
 
 /** Put a trashed learner record back in the school's active list. */
@@ -1398,18 +1403,19 @@ export async function restoreRecord(
   sql: Sql,
   id: string,
   schoolId?: string,
-): Promise<void> {
-  if (schoolId === undefined) {
-    await sql`
-      update sbfp_records set deleted_at = null, deleted_by = null, updated_at = now()
-      where id = ${id} and deleted_at is not null
-    `;
-    return;
-  }
-  await sql`
-    update sbfp_records set deleted_at = null, deleted_by = null, updated_at = now()
-    where id = ${id} and school_id = ${schoolId} and deleted_at is not null
-  `;
+): Promise<boolean> {
+  const rows = schoolId === undefined
+    ? await sql<{ id: string }>`
+        update sbfp_records set deleted_at = null, deleted_by = null, updated_at = now()
+        where id = ${id} and deleted_at is not null
+        returning id
+      `
+    : await sql<{ id: string }>`
+        update sbfp_records set deleted_at = null, deleted_by = null, updated_at = now()
+        where id = ${id} and school_id = ${schoolId} and deleted_at is not null
+        returning id
+      `;
+  return rows.length > 0;
 }
 
 // ── Form 2 manual figures ──────────────────────────────────────────────────────
