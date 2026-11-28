@@ -9,8 +9,9 @@
  * counts. Archived years older than the five-year retention window are removed
  * automatically when a new year starts.
  */
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
+  fetchArchivedSchoolRecords,
   fetchSchoolYearArchive,
   fetchSchoolYears,
   startSchoolYear,
@@ -46,10 +47,6 @@ const fmt = (iso: string) => {
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   return `${months[Number(m[2]) - 1] ?? m[2]} ${m[3]}, ${m[1]}`;
 };
-
-/** A learner is one person across Baseline/Midline/Endline. */
-const learnerKey = (r: { schoolId: string; name: string; dateOfBirth: string; sex: string }) =>
-  `${r.schoolId}|${r.name}|${r.dateOfBirth}|${r.sex}`;
 
 /**
  * The archived year's Form 2 rows. This mirrors the live Summary Table: WHO
@@ -183,6 +180,10 @@ export default function SchoolYears({
   const [loadingArchive, setLoadingArchive] = useState(false);
   const [period, setPeriod] = useState<Period | "All">("All");
   const [schoolFocus, setSchoolFocus] = useState<string | null>(null);
+  /** The focused school's rows, fetched on demand — never the whole district. */
+  const [focusRecords, setFocusRecords] = useState<Student[]>([]);
+  const [focusLoading, setFocusLoading] = useState(false);
+  const recordsCache = useRef(new Map<string, Student[]>());
   const [showStart, setShowStart] = useState(false);
   const [nextSy, setNextSy] = useState(() => nextSchoolYear(activeSy));
   const [starting, setStarting] = useState(false);
@@ -213,6 +214,8 @@ export default function SchoolYears({
     setOpenSy(sy);
     setArchive(null);
     setSchoolFocus(null);
+    setFocusRecords([]);
+    recordsCache.current.clear();
     setPeriod("All");
     setError("");
     setLoadingArchive(true);
@@ -226,6 +229,41 @@ export default function SchoolYears({
       setLoadingArchive(false);
     }
   };
+
+  /** One school's rows, cached for the open year so exports do not reload them. */
+  const recordsFor = async (sy: string, schoolId: string) => {
+    const key = `${sy}:${schoolId}`;
+    const cached = recordsCache.current.get(key);
+    if (cached) return cached;
+    const result = await fetchArchivedSchoolRecords({ data: { sy, schoolId } });
+    if (!result.ok) throw new Error(result.message);
+    recordsCache.current.set(key, result.records);
+    return result.records;
+  };
+
+  useEffect(() => {
+    if (!openSy || !schoolFocus) {
+      setFocusRecords([]);
+      setFocusLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setFocusLoading(true);
+    setFocusRecords([]);
+    void recordsFor(openSy, schoolFocus)
+      .then((rows) => {
+        if (!cancelled) setFocusRecords(rows);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "That school's rows could not be loaded.");
+      })
+      .finally(() => {
+        if (!cancelled) setFocusLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [openSy, schoolFocus]);
 
   const startYear = async () => {
     setError("");
@@ -264,38 +302,37 @@ export default function SchoolYears({
   const activeYear = useMemo(() => years?.find((year) => year.active) ?? null, [years]);
   const oldestKept = retentionCutoff(activeSy);
 
-  const archivedLearners = useMemo(() => {
-    if (!archive) return 0;
-    return new Set(archive.records.map(learnerKey)).size;
-  }, [archive]);
+  const archivedLearners = archive?.stats.learners ?? 0;
 
   const schoolRows = useMemo(() => {
     if (!archive) return [];
-    return schools
-      .map((school) => {
-        const records = archive.records.filter((r) => r.schoolId === school.id);
-        return {
-          school,
-          records: records.length,
-          learners: new Set(records.map(learnerKey)).size,
-          feedback: archive.feedbacks.filter((f) => f.schoolId === school.id).length,
-        };
+    return archive.schoolStats
+      .map((stat) => {
+        const school = schools.find((entry) => entry.id === stat.schoolId);
+        return school
+          ? {
+              school,
+              records: stat.records,
+              learners: stat.learners,
+              feedback: stat.feedback,
+            }
+          : null;
       })
-      .filter((row) => row.records > 0 || row.feedback > 0)
+      .filter((row): row is NonNullable<typeof row> => row !== null)
       .sort((a, b) => b.learners - a.learners || a.school.name.localeCompare(b.school.name));
   }, [archive, schools]);
 
   const learnerRows = useMemo(() => {
     if (!archive || !schoolFocus) return [];
-    return archive.records
-      .filter((r) => r.schoolId === schoolFocus && (period === "All" || r.period === period))
+    return focusRecords
+      .filter((r) => period === "All" || r.period === period)
       .sort(
         (a, b) =>
           a.gradeLevel.localeCompare(b.gradeLevel) ||
           a.name.localeCompare(b.name) ||
           a.period.localeCompare(b.period),
       );
-  }, [archive, schoolFocus, period]);
+  }, [archive, focusRecords, schoolFocus, period]);
 
   const formInfo = (schoolId: string) => {
     if (!archive) return null;
@@ -318,16 +355,16 @@ export default function SchoolYears({
 
   const exportForm1 = async (schoolId: string) => {
     if (!archive) return;
-    const rows = archive.records.filter(
-      (r) => r.schoolId === schoolId && (period === "All" || r.period === period),
-    );
-    if (rows.length === 0) {
-      setError("That school has no learner records in this period.");
-      return;
-    }
-    const info = formInfo(schoolId);
-    if (!info) return;
     try {
+      const rows = (await recordsFor(archive.sy, schoolId)).filter(
+        (r) => period === "All" || r.period === period,
+      );
+      if (rows.length === 0) {
+        setError("That school has no learner records in this period.");
+        return;
+      }
+      const info = formInfo(schoolId);
+      if (!info) return;
       const { exportStudentsToExcel } = await import("@/lib/sbfp-export");
       await exportStudentsToExcel(info, rows, period, archive.sy);
     } catch (err) {
@@ -346,16 +383,14 @@ export default function SchoolYears({
       setError("That school is no longer in the school list.");
       return;
     }
-    const rows = archive.records.filter(
-      (r) => r.schoolId === schoolId && r.period === period,
-    );
-    if (rows.length === 0) {
-      setError("That school has no learner records in this period.");
-      return;
-    }
-    const info = formInfo(schoolId);
-    if (!info) return;
     try {
+      const rows = (await recordsFor(archive.sy, schoolId)).filter((r) => r.period === period);
+      if (rows.length === 0) {
+        setError("That school has no learner records in this period.");
+        return;
+      }
+      const info = formInfo(schoolId);
+      if (!info) return;
       const { exportSummaryToExcel } = await import("@/lib/sbfp-export");
       await exportSummaryToExcel({
         school: info,
@@ -629,9 +664,9 @@ export default function SchoolYears({
             <>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                 <Stat label="Learners" value={archivedLearners} accent t={t} />
-                <Stat label="Period records" value={archive.records.length} t={t} />
+                <Stat label="Period records" value={archive.stats.records} t={t} />
                 <Stat label="Schools with data" value={schoolRows.length} t={t} />
-                <Stat label="Feedback" value={archive.feedbacks.length} t={t} />
+                <Stat label="Feedback" value={archive.stats.feedback} t={t} />
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
@@ -766,7 +801,9 @@ export default function SchoolYears({
                       ✕ hide
                     </button>
                   </div>
-                  {learnerRows.length === 0 ? (
+                  {focusLoading ? (
+                    <p className="text-xs" style={{ color: t.dim }}>Loading {schoolName(schoolFocus)}'s learners…</p>
+                  ) : learnerRows.length === 0 ? (
                     <p className="text-xs" style={{ color: t.dim }}>No records in this period.</p>
                   ) : (
                     <div className="overflow-x-auto max-h-96 overflow-y-auto" style={{ border: `1px solid ${t.border}` }}>

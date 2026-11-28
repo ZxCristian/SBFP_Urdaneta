@@ -96,6 +96,59 @@ export async function schoolRecordStats(sql: Sql): Promise<SchoolRecordStats[]> 
 }
 
 /**
+ * Per-school totals for one school year, for the School Years archive.
+ *
+ * The archive cannot hand every row to the browser (a district year is tens of
+ * thousands of rows, more than the server-function serializer accepts), so the
+ * overview table is drawn from these counts and the rows are loaded one school
+ * at a time.
+ */
+export async function archivedSchoolStats(
+  sql: Sql,
+  sy: string,
+): Promise<Array<{ schoolId: string; records: number; learners: number; feedback: number }>> {
+  const [recordRows, feedbackRows] = await Promise.all([
+    sql.query<{
+      school_id: string;
+      records: number | string;
+      learners: number | string;
+    }>(
+      `select school_id,
+         count(*)::int as records,
+         count(distinct (name, date_of_birth, sex))::int as learners
+       from sbfp_records
+       where deleted_at is null and sy = $1
+       group by school_id`,
+      [sy],
+    ),
+    sql.query<{ school_id: string; feedback: number | string }>(
+      `select school_id, count(*)::int as feedback
+       from sbfp_feedback where sy = $1 group by school_id`,
+      [sy],
+    ),
+  ]);
+
+  const merged = new Map<string, { schoolId: string; records: number; learners: number; feedback: number }>();
+  const row = (schoolId: string) => {
+    let entry = merged.get(schoolId);
+    if (!entry) {
+      entry = { schoolId, records: 0, learners: 0, feedback: 0 };
+      merged.set(schoolId, entry);
+    }
+    return entry;
+  };
+  for (const record of recordRows) {
+    const entry = row(record.school_id);
+    entry.records = Number(record.records ?? 0);
+    entry.learners = Number(record.learners ?? 0);
+  }
+  for (const feedback of feedbackRows) {
+    row(feedback.school_id).feedback = Number(feedback.feedback ?? 0);
+  }
+  return [...merged.values()].filter((entry) => entry.records > 0 || entry.feedback > 0);
+}
+
+/**
  * The dashboard's figures, in three slices (all, elementary, high school).
  * Unique learners are the same people counted by the live dashboard: one row
  * per school/name/birth date/sex, preferring Endline, then Midline, Baseline.

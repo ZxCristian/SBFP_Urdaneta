@@ -284,7 +284,7 @@ export const fetchSchoolYears = createServerFn({ method: "GET" })
 
 /** One archived year's learners, feedback and form headers, read-only. */
 export const fetchSchoolYearArchive = createServerFn({ method: "POST" })
-  .validator((input: { sy: string }) => input)
+  .validator((input: { sy: string; schoolId?: string }) => input)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) =>
     settle(async () => {
@@ -293,7 +293,22 @@ export const fetchSchoolYearArchive = createServerFn({ method: "POST" })
         "Only the Division Office account can open archived school years.",
       );
       const { getArchivedYear } = await import("./sbfp-accounts");
-      return { archive: await getArchivedYear(sql, data.sy) };
+      return { archive: await getArchivedYear(sql, data.sy, data.schoolId) };
+    }),
+  );
+
+/** One school's rows from an archive; the overview itself sends only counts. */
+export const fetchArchivedSchoolRecords = createServerFn({ method: "POST" })
+  .validator((input: { sy: string; schoolId: string }) => input)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) =>
+    settle(async () => {
+      const { sql } = await requireAdmin(
+        await sessionEmail(context),
+        "Only the Division Office account can open archived school years.",
+      );
+      const { getArchivedSchoolRecords } = await import("./sbfp-accounts");
+      return { records: await getArchivedSchoolRecords(sql, data.sy, data.schoolId) };
     }),
   );
 

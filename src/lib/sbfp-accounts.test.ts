@@ -1206,11 +1206,15 @@ describe("school years", () => {
     assert.equal(years[0].feedback, 1);
     assert.equal(years[0].schools, 1);
 
-    // The still-active year's export reads today's live school information.
+    // The overview sends counts, never the whole district's rows.
     const open = await getArchivedYear(db, "2025-2026");
-    assert.equal(open.records.length, 2);
+    assert.deepEqual(open.records, []);
+    assert.deepEqual(open.stats, { learners: 1, records: 2, schools: 1, feedback: 1 });
     assert.equal(open.feedbacks.length, 1);
     assert.equal(open.profiles[SCHOOL_A]?.principal, "Mr. Reyes");
+    // The still-active year's rows are read one school at a time.
+    const openSchool = await getArchivedYear(db, "2025-2026", SCHOOL_A);
+    assert.equal(openSchool.records.length, 2);
   });
 
   it("refuses a year that does not follow the active one", async () => {
@@ -1243,7 +1247,7 @@ describe("school years", () => {
     assert.equal(years[1].learners, 1);
 
     // The archive holds the year's rows and the form header it closed with.
-    const archived = await getArchivedYear(db, "2025-2026");
+    const archived = await getArchivedYear(db, "2025-2026", SCHOOL_A);
     assert.deepEqual(archived.records.map((r) => r.id).sort(), ["sy_a1", "sy_a2"]);
     assert.equal(archived.feedbacks[0].id, "sy_f1");
     assert.equal(archived.profiles[SCHOOL_A]?.principal, "Mr. Reyes");
@@ -1314,7 +1318,7 @@ describe("school years", () => {
     assert.deepEqual(workspace.records.map((r) => r.id), ["sy_a3"]);
     assert.deepEqual(workspace.feedbacks.map((f) => f.id), ["sy_f2"]);
 
-    const archived = await getArchivedYear(db, "2025-2026");
+    const archived = await getArchivedYear(db, "2025-2026", SCHOOL_A);
     assert.deepEqual(archived.records.map((r) => r.id).sort(), ["sy_a1", "sy_a2"]);
     assert.deepEqual(archived.feedbacks.map((f) => f.id), ["sy_f1"]);
   });
