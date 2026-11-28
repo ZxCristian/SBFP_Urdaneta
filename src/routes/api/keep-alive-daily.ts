@@ -12,8 +12,7 @@
  * worker, or a one-line curl loop) can call it once a day.
  */
 import { createFileRoute } from '@tanstack/react-router';
-import { auth } from '@/lib/auth/server';
-import { keepAliveWrite } from '@/lib/sbfp-keepalive';
+import { keepAliveAuthorized, keepAliveWrite } from '@/lib/sbfp-keepalive';
 
 export const Route = createFileRoute('/api/keep-alive-daily')({
   server: {
@@ -25,10 +24,11 @@ export const Route = createFileRoute('/api/keep-alive-daily')({
 });
 
 async function handleKeepAlive(request: Request) {
-  const response = await auth.handler(request);
-
-  if ((response.status !== 200) || ((response.headers.get('content-type')?.startsWith('text/html')) ?? false)) {
-    return response;
+  if (!keepAliveAuthorized(request)) {
+    return new Response(JSON.stringify({ ok: false, error: 'unauthorized' }), {
+      status: 401,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   }
 
   try {
