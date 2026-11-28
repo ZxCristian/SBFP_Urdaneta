@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { before, describe, it } from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import type { Sql } from "./db.ts";
-import { keepAliveWrite, lastKeepAlive } from "./sbfp-keepalive.ts";
+import { keepAliveWrite } from "./sbfp-keepalive.ts";
 
 // The daily keep-alive is one silent write into `sbfp_keepalive`, created by
 // `migrations/0013_keepalive.sql`. These tests run the real SQL the app runs,
@@ -35,18 +35,23 @@ let sql: Sql;
 before(async () => {
   pg = new PGlite();
   await pg.waitReady;
-  const migration = await readFile(join(ROOT, "migrations", "0013_keepalive.sql"), "utf8");
-  await pg.exec(migration);
+  await pg.exec(await readFile(join(ROOT, "migrations", "0013_keepalive.sql"), "utf8"));
   sql = toSql(pg);
 });
 
-describe("keepAliveWrite", () => {
-  it("writes a daily timestamp and returns true", async () => {
-    assert.equal(await keepAliveWrite(sql), true);
+async function dailyStamp(): Promise<string> {
+  const rows = await sql<{ ts: string }>`
+    select ts from sbfp_keepalive where kind = 'daily'
+  `;
+  return rows[0]?.ts ?? "";
+}
 
-    const ts = await lastKeepAlive(sql);
-    assert.notEqual(ts, null);
-    assert.equal(Number.isNaN(new Date(String(ts)).getTime()), false);
+describe("keepAliveWrite", () => {
+  it("writes a daily timestamp", async () => {
+    await keepAliveWrite(sql);
+
+    const written = new Date(await dailyStamp());
+    assert.equal(Number.isNaN(written.getTime()), false);
   });
 
   it("keeps exactly one row per kind, so repeated calls overwrite in place", async () => {
@@ -60,14 +65,11 @@ describe("keepAliveWrite", () => {
   });
 
   it("moves the timestamp forward on the next touch", async () => {
-    const first = await lastKeepAlive(sql);
+    const first = new Date(await dailyStamp());
     await new Promise((resolve) => setTimeout(resolve, 10));
     await keepAliveWrite(sql);
-    const second = await lastKeepAlive(sql);
 
-    assert.ok(
-      new Date(String(second)).getTime() >= new Date(String(first)).getTime(),
-      "expected the keep-alive timestamp to move forward",
-    );
+    const second = new Date(await dailyStamp());
+    assert.ok(second.getTime() >= first.getTime());
   });
 });

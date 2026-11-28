@@ -1,11 +1,11 @@
 /**
  * Invisible daily keep-alive touch for the Supabase database.
  *
- * One authenticated DB write per day that records a timestamp so the project is
- * less likely to be scored as inactive by Supabase's free-plan auto-pause. It
- * writes to a small app table (`sbfp_keepalive`) that is part of the normal
- * migration schema, never rendered in the app, and never exposed to the
- * School Portal or Division Console UI.
+ * One DB write per day records a timestamp so the project is less likely to be
+ * scored as inactive by Supabase's free-plan auto-pause. It writes to a small
+ * app table (`sbfp_keepalive`) that is part of the normal migration schema,
+ * never rendered in the app, and never exposed to the School Portal or Division
+ * Console UI.
  *
  * There is no in-app scheduler here: TanStack Start + Vercel serverless have no
  * long-lived cron. This endpoint exists so an external timer (Vercel Cron, a
@@ -32,10 +32,9 @@ async function handleKeepAlive(request: Request) {
   }
 
   try {
-    const written = await keepAliveWrite();
+    await keepAliveWrite();
     return new Response(JSON.stringify({
       ok: true,
-      wrote: written ? new Date().toISOString() : null,
       ts: new Date().toISOString(),
     }), {
       status: 200,

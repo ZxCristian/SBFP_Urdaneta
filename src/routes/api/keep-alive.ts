@@ -5,15 +5,9 @@
  * free-plan auto-pause. It runs one `select 1` — no writes, no side effects, no
  * discovery of which emails hold accounts — and reports the backend it used.
  *
- * There is no scheduled background task here: Vercel-serverless plus TanStack
- * Start have no long-lived cron. The app is the "something that touches the
- * DB" Supabase expects, so the Division Console poll (`fetchDataVersion`) and
- * the School Portal's same poll already count as activity once real users are
- * signed in. This endpoint exists for an external keep-alive monitor or an
- * operator to run on a timer when the app has no signed-in users.
- *
  * `/api/keep-alive-daily` is the stronger variant: it also records a timestamp
- * in `sbfp_keepalive`, which proves a write reached the database.
+ * in `sbfp_keepalive`, which proves a write reached the database. This route is
+ * for monitors that only need to confirm the database answers.
  */
 import { createFileRoute } from '@tanstack/react-router';
 import { dbSource, getSql } from '@/lib/db';
@@ -29,8 +23,6 @@ export const Route = createFileRoute('/api/keep-alive')({
 });
 
 async function handleKeepAlive(request: Request) {
-  // Never gate these routes with `auth.handler`: it only knows Better Auth's
-  // own `/api/auth/*` paths and answers 404 for everything else.
   if (!keepAliveAuthorized(request)) {
     return new Response(JSON.stringify({ ok: false, error: 'unauthorized' }), {
       status: 401,
@@ -40,10 +32,9 @@ async function handleKeepAlive(request: Request) {
 
   try {
     const sql = await getSql();
-    const rows = await sql<{ one: number }>`select 1 as one`;
+    await sql`select 1`;
     return new Response(JSON.stringify({
       ok: true,
-      touched: rows[0]?.one === 1 ? new Date().toISOString() : null,
       backend: dbSource,
       ts: new Date().toISOString(),
     }), {

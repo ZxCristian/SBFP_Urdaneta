@@ -1,15 +1,15 @@
 /**
  * Invisible daily keep-alive writer for the Supabase database.
  *
- * One authenticated DB write per day that records a timestamp so the project is
- * less likely to be scored as inactive by Supabase's free-plan auto-pause. It
- * writes to a small app table (`sbfp_keepalive`) that is part of the migration
- * schema, never rendered in the app, and never read by the School Portal or
- * Division Console UI.
+ * One DB write per day records a timestamp so the project is less likely to be
+ * scored as inactive by Supabase's free-plan auto-pause. It writes to a small
+ * app table (`sbfp_keepalive`) that is part of the migration schema, never
+ * rendered in the app, and never read by the School Portal or Division Console
+ * UI.
  *
  * There is no in-app scheduler here: TanStack Start + Vercel serverless have no
- * long-lived cron. This module exists so an external timer (Vercel Cron, a
- * worker, or a one-line curl loop) can call it once a day.
+ * long-lived cron. The `/api/keep-alive-daily` route exists so an external timer
+ * (Vercel Cron, a worker, or a one-line curl loop) can call it once a day.
  */
 
 import type { Sql } from "./db.ts";
@@ -21,7 +21,7 @@ import type { Sql } from "./db.ts";
  * client without pulling in `db.ts`'s server bootstrap (which uses Vite-only
  * `import.meta.glob`).
  */
-export async function keepAliveWrite(sql?: Sql): Promise<boolean> {
+export async function keepAliveWrite(sql?: Sql): Promise<void> {
   const db = sql ?? (await (await import("./db.ts")).getSql());
   // The table name is a constant, so it is written inline: interpolating it
   // would make the driver send it as a bound parameter (`insert into $1`).
@@ -31,15 +31,14 @@ export async function keepAliveWrite(sql?: Sql): Promise<boolean> {
     on conflict (kind) do update
     set ts = now()
   `;
-  return true;
 }
 
 /**
- * Optional shared-secret gate for the keep-alive endpoints.
+ * Optional shared-secret gate for the keep-alive routes.
  *
  * When `KEEPALIVE_SECRET` is set, callers must present it as `?key=` or
- * `x-keepalive-key`; when it is unset the endpoints are open, because all an
- * anonymous caller can do is re-stamp one row or re-read a version string.
+ * `x-keepalive-key`; when it is unset the routes are open, because all an
+ * anonymous caller can do is re-stamp one row or run one `select 1`.
  *
  * Do not gate these routes with Better Auth's `auth.handler`: that router only
  * knows its own `/api/auth/*` paths and answers 404 for anything else, so the
@@ -53,12 +52,4 @@ export function keepAliveAuthorized(request: Request): boolean {
     new URL(request.url).searchParams.get("key") ??
     "";
   return presented === expected;
-}
-
-/** Read the last written timestamp (used by tests; no app surface reads it). */
-export async function lastKeepAlive(sql: Sql): Promise<string | null> {
-  const rows = await sql<{ ts: string | null }>`
-    select ts from sbfp_keepalive where kind = 'daily'
-  `;
-  return rows[0]?.ts ?? null;
 }
