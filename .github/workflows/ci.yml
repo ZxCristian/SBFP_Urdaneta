@@ -28,8 +28,8 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Auth invariant (preview and production agree)
-        run: npm run check:auth
+      # `check:auth` compares a RUNNING dev server with the next build, so it
+      # belongs to local/smoke checks (scripts/browser-smoke.mjs), not CI.
 
       - name: Tests
         run: npm test
